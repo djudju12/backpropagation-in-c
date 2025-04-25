@@ -18,7 +18,7 @@
 
 static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
 
-#define GAMMA 0.05
+#define GAMMA 0.02
 typedef struct {
     double *ws;
     uint32_t wcount;
@@ -39,9 +39,8 @@ typedef struct {
 
 typedef struct {
     Perceptron *ps;
-    size_t offset;
-    size_t cnt;
     Data *data;
+    pthread_mutex_t *mut;
 } Thread_Data;
 
 void print_image2(uint8_t *image, uint32_t rows, uint32_t cols) {
@@ -155,24 +154,43 @@ uint8_t find_label(uint8_t *image, uint32_t rows, uint32_t cols, Perceptron *ps,
     return 255;
 }
 
+#define PERCEPTRON_CNT 10
+Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
+    pthread_mutex_lock(mut);
+    static size_t head = 0;
+    if (head >= PERCEPTRON_CNT) {
+        pthread_mutex_unlock(mut);
+        return NULL;
+    }
+
+    size_t my_perceptron = head;
+    head += 1;
+
+    pthread_mutex_unlock(mut);
+    return &queue[my_perceptron];
+}
+
+
+#define TOTAL_ITERATIONS 10
 void *train_perceptron(void *args) {
     Thread_Data *td = (Thread_Data *)args;
-    for (size_t p = 0; p < td->cnt; p++) {
-        if (td->ps[p + td->offset].stop_cond <= GAMMA) continue;
-        for (size_t it = 0; it < 10; it++) {
+    for (Perceptron *p = unqueue(td->ps, td->mut); p != NULL; p = unqueue(td->ps, td->mut)) {
+        for (size_t it = 0; it < TOTAL_ITERATIONS && p->stop_cond > GAMMA; it++) {
             float sum_stop_cond = 0;
             for (size_t i = 0; i < td->data->meta.size; i++) {
-                bool y = generate_y(*td->data, td->ps[p + td->offset], i);
-                bool dy = td->ps[p + td->offset].label == td->data->labels[i];
+                bool y = generate_y(*td->data, *p, i);
+                bool dy = p->label == td->data->labels[i];
                 sum_stop_cond += abs(dy - y);
                 if (y != dy) {
-                    for (uint32_t j = 0; j < td->data->meta.rows*td->data->meta.cols && j < td->ps[p + td->offset].wcount; j++) {
-                        td->ps[p + td->offset].ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[(i * td->data->meta.cols * td->data->meta.rows) + j];
+                    size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
+                    size_t image_index = (i * total_pixels);
+                    for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
+                        p->ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[image_index + j];
                     }
                 }
             }
 
-            td->ps[p + td->offset].stop_cond = sum_stop_cond / td->data->meta.size;
+            p->stop_cond = sum_stop_cond / td->data->meta.size;
         }
     }
 
@@ -223,13 +241,15 @@ volatile int training_finished = false;
 void *print_perceptons(void *args) {
     Perceptron *ps = (Perceptron *) args;
     while (!training_finished) {
+        printf("GAMMA: %.4f | ", GAMMA);
         for (size_t i = 0; i < 10; i++) {
             printf("[%ld]: %.4f ", i, ps[i].stop_cond);
         }
 
-        printf("\n");
+        printf("\n\r");
     }
 
+    printf("\n");
     return NULL;
 }
 
@@ -253,58 +273,28 @@ int main(void) {
 
     long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
     pthread_t threads[number_of_processors];
-    Thread_Data threads_data[number_of_processors];
-    if (number_of_processors > 10) {
-        for (int i = 0; i < number_of_processors; i++) {
-            threads_data[i] = (Thread_Data) {
-                .cnt = 1,
-                .offset = i,
-                .data = &data,
-                .ps = p
-            };
-        }
-    } else {
-        int per_processor = 10 / number_of_processors;
-        int remaning = 10 % number_of_processors;
-        int offset = 0;
-        for (int i = 0; i < number_of_processors; i++) {
-            int cnt = per_processor;
-            if (remaning > 0) {
-                if (i == number_of_processors - 1) cnt += remaning;
-                else {
-                    cnt++;
-                    remaning--;
-                }
-            }
 
-            threads_data[i] = (Thread_Data) {
-                .cnt = cnt,
-                .offset = offset,
-                .data = &data,
-                .ps = p
-            };
-
-            offset += cnt;
-        }
-    }
+    pthread_mutex_t perceptron_mut = PTHREAD_MUTEX_INITIALIZER;
+    Thread_Data td = {0};
+    td.data = &data;
+    td.ps = p;
+    td.mut = &perceptron_mut;
 
     for (int i = 0; i < number_of_processors; i++) {
-        pthread_create(&threads[i], NULL, train_perceptron, (void*)&threads_data[i]);
+        pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
     }
 
-    // pthread_t print_thread;
-    // pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
-
-    printf("Training...... ");
+    pthread_t print_thread;
+    pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
 
     for (int i = 0; i < number_of_processors; i++) {
         pthread_join(threads[i], NULL);
     }
 
     training_finished = true;
-    // pthread_join(print_thread, NULL);
+    pthread_join(print_thread, NULL);
 
-#if 1
+#if 0
     InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Let Me Guess!");
 
     while (!WindowShouldClose()) {
