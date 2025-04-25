@@ -4,8 +4,17 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define LEARNING_RATE 0.5
+
+typedef struct {
+    double *ws;
+    uint32_t wcount;
+    int label;
+} Perceptron;
 
 typedef struct {
     struct {
@@ -17,6 +26,17 @@ typedef struct {
     uint8_t *images;
     uint8_t *labels;
 } Data;
+
+typedef struct {
+    Perceptron *ps;
+    size_t offset;
+    size_t cnt;
+    Data *data;
+} Thread_Data;
+
+bool f(double);
+bool gerenate_y(Data, Perceptron, int);
+void *train_perceptron(void *td);
 
 void print_image(Data data, size_t i) {
     assert(i < data.meta.size);
@@ -97,18 +117,6 @@ CLEAN_UP:
     return false;
 }
 
-typedef struct {
-    double *ws;
-    uint32_t wcount;
-    int label;
-} Perceptron;
-
-bool f(double);
-bool gerenate_y(Data, Perceptron, int);
-
-static const double lr = 0.5;
-
-void train_perceptron(Perceptron *p, Data traning_data);
 int main(void) {
     static char *images_file_path = "./data/train-images.idx3-ubyte";
     static char *labels_file_path = "./data/train-labels.idx1-ubyte";
@@ -123,8 +131,46 @@ int main(void) {
         p[i].label = i;
     }
 
-    for (size_t k = 0; k < 10; k++) {
-        train_perceptron(&p[k], data);
+    long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
+    pthread_t threads[number_of_processors];
+    Thread_Data threads_data[number_of_processors];
+    if (number_of_processors > 10) {
+        assert(0 && "TODO: not implemented");
+        // for (int i = 0; i < number_of_processors; i ++) {
+        //     train_perceptron(&td);
+        // }
+    } else {
+        int per_processor = 10 / number_of_processors;
+        int remaning = 10 % number_of_processors;
+        int offset = 0;
+        for (int i = 0; i < number_of_processors; i++) {
+            int cnt = per_processor;
+            if (remaning > 0) {
+                if (i == number_of_processors - 1) cnt += remaning;
+                else {
+                    cnt++;
+                    remaning--;
+                }
+            }
+
+            threads_data[i] = (Thread_Data) {
+                .cnt = cnt,
+                .offset = offset,
+                .data = &data,
+                .ps = p
+            };
+
+            offset += cnt;
+        }
+    }
+
+    for (int i = 0; i < number_of_processors; i++) {
+        pthread_create(&threads[i], NULL, train_perceptron, (void*)&threads_data[i]);
+    }
+
+    printf("Training......\n");
+    for (int i = 0; i < number_of_processors; i++) {
+        pthread_join(threads[i], NULL);
     }
 
     Data testing_data = {0};
@@ -147,20 +193,24 @@ int main(void) {
     return 0;
 }
 
-void train_perceptron(Perceptron *p, Data traning_data) {
+void *train_perceptron(void *args) {
+    Thread_Data *td = (Thread_Data *)args;
     size_t total_it = 10;
-    for (size_t it = 0; it < total_it; it++) {
-        printf("Training perception %d: %ld/%ld\n", p->label, it, total_it);
-        for (size_t i = 0; i < traning_data.meta.size; i++) {
-            bool y = gerenate_y(traning_data, *p, i);
-            bool dy = p->label == traning_data.labels[i];
-            if (y != (p->label == traning_data.labels[i])) {
-                for (uint32_t j = 0; j < traning_data.meta.rows*traning_data.meta.cols && j < p->wcount; j++) {
-                    p->ws[j] += lr*((int) dy - (int) y)*traning_data.images[(i * traning_data.meta.cols * traning_data.meta.rows) + j];
+    for (size_t p = 0; p < td->cnt; p++) {
+        for (size_t it = 0; it < total_it; it++) {
+            for (size_t i = 0; i < td->data->meta.size; i++) {
+                bool y = gerenate_y(*td->data, td->ps[p + td->offset], i);
+                bool dy = td->ps[p + td->offset].label == td->data->labels[i];
+                if (y != (td->ps[p + td->offset].label == td->data->labels[i])) {
+                    for (uint32_t j = 0; j < td->data->meta.rows*td->data->meta.cols && j < td->ps[p + td->offset].wcount; j++) {
+                        td->ps[p + td->offset].ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[(i * td->data->meta.cols * td->data->meta.rows) + j];
+                    }
                 }
             }
         }
     }
+
+    return NULL;
 }
 
 bool gerenate_y(Data data, Perceptron p, int i) {
@@ -173,7 +223,6 @@ bool gerenate_y(Data data, Perceptron p, int i) {
 }
 
 bool f(double sum) {
-    // y -> 0...10
     return sum > 0;
 }
 
