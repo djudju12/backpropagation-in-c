@@ -11,14 +11,16 @@
 #include <raylib.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define LEARNING_RATE 0.1
 #define RADIUS 20
 #define IMAGE_SIZE 28
 #define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
 
 static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
 
-#define GAMMA 0.02
+#define LEARNING_RATE 0.25
+#define GAMMA 0.015
+#define TOTAL_ITERATIONS 10
+
 typedef struct {
     double *ws;
     uint32_t wcount;
@@ -130,6 +132,8 @@ bool generate_y(Data data, Perceptron p, int i) {
         sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
     }
 
+    sum += p.ws[p.wcount] * 255;
+
     return f(sum);
 }
 
@@ -139,6 +143,8 @@ bool generate_y_from_image(uint8_t *image, uint32_t rows, uint32_t cols, Percept
     for (uint32_t j = 0; j < p.wcount; j++) {
         sum += p.ws[j] * image[j];
     }
+
+    sum += p.ws[p.wcount] * 255;
 
     return f(sum);
 }
@@ -170,8 +176,6 @@ Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
     return &queue[my_perceptron];
 }
 
-
-#define TOTAL_ITERATIONS 10
 void *train_perceptron(void *args) {
     Thread_Data *td = (Thread_Data *)args;
     for (Perceptron *p = unqueue(td->ps, td->mut); p != NULL; p = unqueue(td->ps, td->mut)) {
@@ -266,9 +270,10 @@ int main(void) {
     uint32_t wcount = data.meta.rows * data.meta.cols;
     for (size_t i = 0; i < 10; i++) {
         p[i].wcount = wcount;
-        p[i].ws = calloc(wcount, sizeof(*p[i].ws));
+        p[i].ws = calloc(wcount + 1, sizeof(*p[i].ws));
         p[i].label = i;
         p[i].stop_cond = 1;
+        p[i].ws[wcount] = 0;
     }
 
     long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
