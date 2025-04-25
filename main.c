@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -7,13 +8,22 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define LEARNING_RATE 0.5
+#include <raylib.h>
 
+#define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define LEARNING_RATE 0.1
+#define RADIUS 20
+#define IMAGE_SIZE 28
+#define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
+
+static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
+
+#define GAMMA 0.05
 typedef struct {
     double *ws;
     uint32_t wcount;
     int label;
+    float stop_cond;
 } Perceptron;
 
 typedef struct {
@@ -34,19 +44,13 @@ typedef struct {
     Data *data;
 } Thread_Data;
 
-bool f(double);
-bool gerenate_y(Data, Perceptron, int);
-void *train_perceptron(void *td);
-
-void print_image(Data data, size_t i) {
-    assert(i < data.meta.size);
+void print_image2(uint8_t *image, uint32_t rows, uint32_t cols) {
     static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
 
-    printf("Number: %u\n", data.labels[i]);
-    for (size_t y = 0; y < data.meta.rows; y++) {
-        for (size_t x = 0; x < data.meta.cols; x++) {
-            uint8_t v = data.images[(i * data.meta.cols * data.meta.rows) + data.meta.cols*y + x];
-            printf("%c", alphabet[v / (255 / (ARR_SIZE(alphabet) - 1))]);
+    for (size_t y = 0; y < rows; y++) {
+        for (size_t x = 0; x < cols; x++) {
+            uint8_t v = image[cols*y + x];
+            printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
         }
 
         printf("\n");
@@ -117,28 +121,148 @@ CLEAN_UP:
     return false;
 }
 
+bool f(double sum) {
+    return sum > 0;
+}
+
+bool generate_y(Data data, Perceptron p, int i) {
+    double sum = 0;
+    for (uint32_t j = 0; j < data.meta.rows*data.meta.cols && j < p.wcount; j++) {
+        sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
+    }
+
+    return f(sum);
+}
+
+bool generate_y_from_image(uint8_t *image, uint32_t rows, uint32_t cols, Perceptron p) {
+    assert(rows * cols == p.wcount);
+    double sum = 0;
+    for (uint32_t j = 0; j < p.wcount; j++) {
+        sum += p.ws[j] * image[j];
+    }
+
+    return f(sum);
+}
+
+uint8_t find_label(uint8_t *image, uint32_t rows, uint32_t cols, Perceptron *ps, uint32_t ps_cnt) {
+    for (size_t i = 0; i < ps_cnt; i++) {
+        bool y = generate_y_from_image(image, rows, cols, ps[i]);
+        if (y) {
+            return ps[i].label;
+        }
+    }
+
+    return 255;
+}
+
+void *train_perceptron(void *args) {
+    Thread_Data *td = (Thread_Data *)args;
+    for (size_t p = 0; p < td->cnt; p++) {
+        if (td->ps[p + td->offset].stop_cond <= GAMMA) continue;
+        for (size_t it = 0; it < 10; it++) {
+            float sum_stop_cond = 0;
+            for (size_t i = 0; i < td->data->meta.size; i++) {
+                bool y = generate_y(*td->data, td->ps[p + td->offset], i);
+                bool dy = td->ps[p + td->offset].label == td->data->labels[i];
+                sum_stop_cond += abs(dy - y);
+                if (y != dy) {
+                    for (uint32_t j = 0; j < td->data->meta.rows*td->data->meta.cols && j < td->ps[p + td->offset].wcount; j++) {
+                        td->ps[p + td->offset].ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[(i * td->data->meta.cols * td->data->meta.rows) + j];
+                    }
+                }
+            }
+
+            td->ps[p + td->offset].stop_cond = sum_stop_cond / td->data->meta.size;
+        }
+    }
+
+    return NULL;
+}
+
+void mark_mouse_pos(void) {
+    Vector2 pos = GetMousePosition();
+    if (pos.y >= 0 && pos.x >= 0 && pos.y < WINDOW_SIZE && pos.x < WINDOW_SIZE) pixels[(int)pos.y][(int)pos.x] = true;
+}
+
+void unmark_mouse_pos(void) {
+    Vector2 pos = GetMousePosition();
+    if (pos.y >= 0 && pos.x >= 0 && pos.y < WINDOW_SIZE && pos.x < WINDOW_SIZE) pixels[(int)pos.y][(int)pos.x] = false;
+}
+
+void paint_marks(void) {
+    for (size_t y = 0; y < WINDOW_SIZE; y++) {
+        for (size_t x = 0; x < WINDOW_SIZE; x++) {
+            if (pixels[y][x]) {
+                DrawCircle(x, y, RADIUS, WHITE);
+            }
+        }
+    }
+}
+
+uint8_t *make_image() {
+    static uint8_t buffer[IMAGE_SIZE][IMAGE_SIZE];
+    Image window_image = LoadImageFromScreen();
+    for (size_t iy = 0; iy < IMAGE_SIZE; iy++) {
+        for (size_t ix = 0; ix < IMAGE_SIZE; ix++) {
+            uint32_t sum = 0;
+            for (size_t wy = 0; wy < IMAGE_SIZE; wy++) {
+                for (size_t wx = 0; wx < IMAGE_SIZE; wx++) {
+                    Color c = GetImageColor(window_image, (ix*IMAGE_SIZE) + wx, (iy*IMAGE_SIZE) + wy);
+                    sum += (c.r + c.g + c.b)/3;
+                }
+            }
+
+            buffer[iy][ix] = (sum/IMAGE_SIZE*IMAGE_SIZE);
+        }
+    }
+
+    return (uint8_t*) buffer;
+}
+
+volatile int training_finished = false;
+void *print_perceptons(void *args) {
+    Perceptron *ps = (Perceptron *) args;
+    while (!training_finished) {
+        for (size_t i = 0; i < 10; i++) {
+            printf("[%ld]: %.4f ", i, ps[i].stop_cond);
+        }
+
+        printf("\n");
+    }
+
+    return NULL;
+}
+
 int main(void) {
     static char *images_file_path = "./data/train-images.idx3-ubyte";
     static char *labels_file_path = "./data/train-labels.idx1-ubyte";
     Data data = {0};
     read_data(images_file_path, labels_file_path, &data);
 
+    // print_image(data, 0);
+    // print_image2(data.images + (1 * data.meta.rows * data.meta.cols), data.meta.rows, data.meta.cols);
+
     Perceptron p[10] = { 0 };
-    uint32_t wcount = data.meta.size * data.meta.rows * data.meta.cols;
+    uint32_t wcount = data.meta.rows * data.meta.cols;
     for (size_t i = 0; i < 10; i++) {
         p[i].wcount = wcount;
         p[i].ws = calloc(wcount, sizeof(*p[i].ws));
         p[i].label = i;
+        p[i].stop_cond = 1;
     }
 
     long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
     pthread_t threads[number_of_processors];
     Thread_Data threads_data[number_of_processors];
     if (number_of_processors > 10) {
-        assert(0 && "TODO: not implemented");
-        // for (int i = 0; i < number_of_processors; i ++) {
-        //     train_perceptron(&td);
-        // }
+        for (int i = 0; i < number_of_processors; i++) {
+            threads_data[i] = (Thread_Data) {
+                .cnt = 1,
+                .offset = i,
+                .data = &data,
+                .ps = p
+            };
+        }
     } else {
         int per_processor = 10 / number_of_processors;
         int remaning = 10 % number_of_processors;
@@ -168,113 +292,66 @@ int main(void) {
         pthread_create(&threads[i], NULL, train_perceptron, (void*)&threads_data[i]);
     }
 
-    printf("Training......\n");
+    // pthread_t print_thread;
+    // pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
+
+    printf("Training...... ");
+
     for (int i = 0; i < number_of_processors; i++) {
         pthread_join(threads[i], NULL);
     }
 
+    training_finished = true;
+    // pthread_join(print_thread, NULL);
+
+#if 1
+    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Let Me Guess!");
+
+    while (!WindowShouldClose()) {
+        BeginDrawing();
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            mark_mouse_pos();
+        } else if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+            unmark_mouse_pos();
+        } else if (IsKeyPressed(KEY_SPACE))  {
+            uint8_t *image = make_image();
+            uint8_t label = find_label(image, 28, 28, p, 10);
+            printf("Guessed: %u\n", label);
+            print_image2(image, 28, 28);
+        } else if (IsKeyPressed(KEY_R))  {
+            for (size_t y = 0; y < WINDOW_SIZE; y++) {
+                for (size_t x = 0; x < WINDOW_SIZE; x++) {
+                    pixels[y][x] = false;
+                }
+            }
+        }
+
+        ClearBackground(BLACK);
+        paint_marks();
+
+        EndDrawing();
+    }
+
+    CloseWindow();
+
+#else
     Data testing_data = {0};
     read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data);
 
     int correct_guesses = 0;
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
-        for (size_t j = 0; j < 10; j++) {
-            bool y = gerenate_y(testing_data, p[j], i);
-            bool dy = p[j].label == testing_data.labels[i];
-            if (y && dy) {
-                correct_guesses++;
-            }
-        }
+        uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
+        uint8_t label = find_label(image, 28, 28, p, 10);
+        // printf("[%d] Guessed: %d. Actual: %d\n", i, label, testing_data.labels[i]);
+        // print_image2(image, 28, 28);
+        if (label == testing_data.labels[i]) correct_guesses++;
     }
 
-    printf("%d/%d\n", correct_guesses, testing_data.meta.size);
+    int incorrect_guesses = testing_data.meta.size - correct_guesses;
+    printf("%04d/%d\n", correct_guesses, testing_data.meta.size);
+    printf("%04d/%d\n", incorrect_guesses, testing_data.meta.size);
     printf("%.2f%%\n", (correct_guesses/(double)testing_data.meta.size)*100);
-
+    printf("%.2f%%\n", (incorrect_guesses/(double)testing_data.meta.size)*100);
+#endif
     return 0;
 }
-
-void *train_perceptron(void *args) {
-    Thread_Data *td = (Thread_Data *)args;
-    size_t total_it = 10;
-    for (size_t p = 0; p < td->cnt; p++) {
-        for (size_t it = 0; it < total_it; it++) {
-            for (size_t i = 0; i < td->data->meta.size; i++) {
-                bool y = gerenate_y(*td->data, td->ps[p + td->offset], i);
-                bool dy = td->ps[p + td->offset].label == td->data->labels[i];
-                if (y != (td->ps[p + td->offset].label == td->data->labels[i])) {
-                    for (uint32_t j = 0; j < td->data->meta.rows*td->data->meta.cols && j < td->ps[p + td->offset].wcount; j++) {
-                        td->ps[p + td->offset].ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[(i * td->data->meta.cols * td->data->meta.rows) + j];
-                    }
-                }
-            }
-        }
-    }
-
-    return NULL;
-}
-
-bool gerenate_y(Data data, Perceptron p, int i) {
-    double sum = 0;
-    for (uint32_t j = 0; j < data.meta.rows*data.meta.cols && j < p.wcount; j++) {
-        sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
-    }
-
-    return f(sum);
-}
-
-bool f(double sum) {
-    return sum > 0;
-}
-
-// bool dump_weights(char *out_path, Perceptron p) {
-//     FILE *f = fopen(out_path, "wb");
-//     if (f == NULL) {
-//         printf("cannot open file %s\n", out_path);
-//         return false;
-//     }
-
-//     static unsigned char magic[] = {'N', 'N', 'W', 'G'};
-//     if (fwrite(magic, ARR_SIZE(magic), 1, f) == 0) {
-//         printf("could not write to file %s\n", out_path);
-//         return false;
-//     }
-
-//     if (fwrite(&p.wcount, sizeof(p.wcount), 1, f) == 0) {
-//         printf("could not write to file %s\n", out_path);
-//         return false;
-//     }
-
-//     if (fwrite(p.ws, sizeof(*p.ws), p.wcount, f) == 0) {
-//         printf("could not write to file %s\n", out_path);
-//         return false;
-//     }
-
-//     return true;
-// }
-
-// bool *load_weights(char *path, Perceptron *p) {
-//     FILE *weights_file = fopen(path, "rb");
-//     if (weights_file == NULL) {
-//         printf("ERROR: could not open file %s\n", path);
-//         goto CLEAN_UP;
-//     }
-
-//     char magic_number[4];
-//     if (fread(magic_number, sizeof(magic_number), 1, weights_file) == 0) {
-//         printf("ERROR: could read from file %s\n", path);
-//         goto CLEAN_UP;
-//     }
-
-//     if (memcmp(magic_number, "NNWG", 4) != 0) {
-//         printf("ERROR: %s its not a weights file\n", path);
-//         goto CLEAN_UP;
-//     }
-
-//     fclose(weights_file);
-//     return true;
-
-// CLEAN_UP:
-//     if (weights_file) fclose(weights_file);
-
-//     return false;
-// }

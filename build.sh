@@ -2,4 +2,4 @@
 
 set -x
 
-gcc -o perceptron main.c -Wall -Wextra -ggdb
+gcc -o perceptron main.c -Wall -Wextra -ggdb -lraylib
