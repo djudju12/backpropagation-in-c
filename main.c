@@ -24,7 +24,7 @@ static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
 typedef struct {
     double *ws;
     uint32_t wcount;
-    int label;
+    uint8_t label;
     float stop_cond;
 } Perceptron;
 
@@ -70,7 +70,7 @@ bool read_data(const char *images_file_path, const char *labels_file_path, Data 
         goto CLEAN_UP;
     }
 
-    unsigned char metadata_buffer[16];
+    static unsigned char metadata_buffer[16];
     if (fread(&metadata_buffer, sizeof(metadata_buffer), 1, images_file) == 0) {
         printf("cannot read file %s\n", images_file_path);
         goto CLEAN_UP;
@@ -125,17 +125,6 @@ CLEAN_UP:
 double sigmoid(double sum) {
     return 1 / (1 + exp(-sum));
 }
-
-// bool generate_y(Data data, Perceptron p, int i) {
-//     double sum = 0;
-//     for (uint32_t j = 0; j < data.meta.rows*data.meta.cols && j < p.wcount; j++) {
-//         sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
-//     }
-
-//     sum += p.ws[p.wcount] * 255;
-
-//     return f(sum);
-// }
 
 double sum_weights(uint8_t *image, Perceptron p) {
     double sum = 0;
@@ -272,6 +261,79 @@ void *print_perceptons(void *args) {
     return NULL;
 }
 
+static const char magic[] = "PiPi";
+bool dump_perceptrons(char *out, Perceptron *ps) {
+    FILE *f = fopen(out, "wb");
+    if (f == NULL) {
+        printf("ERROR: cannot open file %s\n", out);
+        goto ERROR;
+    }
+
+    if (fwrite(magic, 1, ARR_SIZE(magic) - 1, f) == 0) {
+        printf("ERROR: could not write to file %s\n", out);
+        goto ERROR;
+    }
+
+    for (size_t i = 0; i < 10; i++) {
+        if (fwrite(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
+            printf("ERROR: could not write to file %s\n", out);
+            goto ERROR;
+        }
+
+        if (fwrite(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
+            printf("ERROR: could not write to file %s\n", out);
+            goto ERROR;
+        }
+    }
+
+    return true;
+ERROR:
+    if(f) fclose(f);
+    return false;
+}
+
+bool load_perceptrons(char *in, Perceptron *ps) {
+    FILE *f = fopen(in, "rb");
+    if (f == NULL) {
+        printf("ERROR: cannot open file %s\n", in);
+        goto ERROR;
+    }
+
+    static unsigned char magic_buffer[4];
+    if (fread(&magic_buffer, sizeof(magic_buffer), 1, f) == 0) {
+        printf("cannot read file %s\n", in);
+        goto ERROR;
+    }
+
+    assert(memcmp(magic, magic_buffer, 4) == 0 && "not a perceptron file");
+    for (size_t i = 0; i < 10; i++) {
+        ps[i].wcount = 28*28;
+        ps[i].ws = malloc((ps[i].wcount + 1) * sizeof(*ps[i].ws));
+        ps[i].ws[ps[i].wcount] = 0;
+        ps[i].stop_cond = 1;
+
+        if (fread(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
+            printf("ERROR: could not read label in file %s\n", in);
+            goto ERROR;
+        }
+
+        if (fread(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
+            printf("ERROR: could not read label in file %s\n", in);
+            goto ERROR;
+        }
+    }
+
+    fclose(f);
+    return true;
+
+ERROR:
+    if(f) fclose(f);
+    for (size_t i = 0; i < 10; i++) {
+        if (ps[i].ws) free(ps[i].ws);
+    }
+    return false;
+}
+
 int main(void) {
     static char *images_file_path = "./data/train-images.idx3-ubyte";
     static char *labels_file_path = "./data/train-labels.idx1-ubyte";
@@ -279,15 +341,20 @@ int main(void) {
     read_data(images_file_path, labels_file_path, &data);
 
     Perceptron p[10] = { 0 };
-    uint32_t wcount = data.meta.rows * data.meta.cols;
-    for (size_t i = 0; i < 10; i++) {
-        p[i].wcount = wcount;
-        p[i].ws = calloc(wcount + 1, sizeof(*p[i].ws));
-        p[i].label = i;
-        p[i].stop_cond = 1;
-        p[i].ws[wcount] = 0;
+    // uint32_t wcount = data.meta.rows * data.meta.cols;
+    // for (size_t i = 0; i < 10; i++) {
+    //     p[i].wcount = wcount;
+    //     p[i].ws = calloc(wcount + 1, sizeof(*p[i].ws));
+    //     p[i].label = i;
+    //     p[i].stop_cond = 1;
+    //     p[i].ws[wcount] = 0;
+    // }
+
+    if (!load_perceptrons("out.bin", p)) {
+        return 1;
     }
 
+#if 0
     long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
     pthread_t threads[number_of_processors];
 
@@ -308,9 +375,15 @@ int main(void) {
         pthread_join(threads[i], NULL);
     }
 
-    training_finished = true;
+    // training_finished = true;
     // pthread_join(print_thread, NULL);
 
+    if (!dump_perceptrons("out.bin", p)) {
+        return 1;
+    }
+
+    // return 0;
+#endif
 #if 0
     InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Let Me Guess!");
 
