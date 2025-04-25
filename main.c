@@ -11,15 +11,15 @@
 #include <raylib.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define RADIUS 20
+#define RADIUS 35
 #define IMAGE_SIZE 28
 #define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
 
 static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
 
-#define LEARNING_RATE 0.25
-#define GAMMA 0.015
-#define TOTAL_ITERATIONS 10
+#define LEARNING_RATE 0.5
+#define GAMMA 0.02
+#define TOTAL_ITERATIONS 50
 
 typedef struct {
     double *ws;
@@ -122,42 +122,53 @@ CLEAN_UP:
     return false;
 }
 
-bool f(double sum) {
-    return sum > 0;
+double sigmoid(double sum) {
+    return 1 / (1 + exp(-sum));
 }
 
-bool generate_y(Data data, Perceptron p, int i) {
-    double sum = 0;
-    for (uint32_t j = 0; j < data.meta.rows*data.meta.cols && j < p.wcount; j++) {
-        sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
-    }
+// bool generate_y(Data data, Perceptron p, int i) {
+//     double sum = 0;
+//     for (uint32_t j = 0; j < data.meta.rows*data.meta.cols && j < p.wcount; j++) {
+//         sum += p.ws[j] * data.images[(i * data.meta.cols * data.meta.rows) + j];
+//     }
 
-    sum += p.ws[p.wcount] * 255;
+//     sum += p.ws[p.wcount] * 255;
 
-    return f(sum);
-}
+//     return f(sum);
+// }
 
-bool generate_y_from_image(uint8_t *image, uint32_t rows, uint32_t cols, Perceptron p) {
-    assert(rows * cols == p.wcount);
+double sum_weights(uint8_t *image, Perceptron p) {
     double sum = 0;
     for (uint32_t j = 0; j < p.wcount; j++) {
-        sum += p.ws[j] * image[j];
+        sum += p.ws[j] * (image[j] / 255.0);
     }
 
-    sum += p.ws[p.wcount] * 255;
+    sum += p.ws[p.wcount];
 
-    return f(sum);
+    return sum;
 }
 
-uint8_t find_label(uint8_t *image, uint32_t rows, uint32_t cols, Perceptron *ps, uint32_t ps_cnt) {
+double gradient_output(double sum) {
+    double s = sigmoid(sum);
+    return s * (1-s);
+}
+
+double generate_output(double sum) {
+    return sigmoid(sum);
+}
+
+int find_label(uint8_t *image, Perceptron *ps, uint32_t ps_cnt) {
+    double max = 0;
+    uint8_t label = -1;
     for (size_t i = 0; i < ps_cnt; i++) {
-        bool y = generate_y_from_image(image, rows, cols, ps[i]);
-        if (y) {
-            return ps[i].label;
+        double y = generate_output(sum_weights(image, ps[i]));
+        if (y > max) {
+            label = ps[i].label;
+            max = y;
         }
     }
 
-    return 255;
+    return label;
 }
 
 #define PERCEPTRON_CNT 10
@@ -182,16 +193,20 @@ void *train_perceptron(void *args) {
         for (size_t it = 0; it < TOTAL_ITERATIONS && p->stop_cond > GAMMA; it++) {
             float sum_stop_cond = 0;
             for (size_t i = 0; i < td->data->meta.size; i++) {
-                bool y = generate_y(*td->data, *p, i);
-                bool dy = p->label == td->data->labels[i];
-                sum_stop_cond += abs(dy - y);
-                if (y != dy) {
-                    size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
-                    size_t image_index = (i * total_pixels);
-                    for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
-                        p->ws[j] += LEARNING_RATE*((int) dy - (int) y)*td->data->images[image_index + j];
-                    }
+                size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
+                size_t image_index = (i * total_pixels);
+                double sum = sum_weights(td->data->images + image_index, *p);
+                double y = generate_output(sum);
+                double gout = gradient_output(sum);
+                double dy = p->label == td->data->labels[i] ? 1.0 : 0.0;
+                double local_error = dy - y;
+                sum_stop_cond += fabs(local_error);
+                for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
+                    double i = td->data->images[image_index + j] / 255.0;
+                    p->ws[j] += LEARNING_RATE * local_error * i * gout;
                 }
+
+                p->ws[p->wcount] += LEARNING_RATE * local_error * gout;
             }
 
             p->stop_cond = sum_stop_cond / td->data->meta.size;
@@ -263,9 +278,6 @@ int main(void) {
     Data data = {0};
     read_data(images_file_path, labels_file_path, &data);
 
-    // print_image(data, 0);
-    // print_image2(data.images + (1 * data.meta.rows * data.meta.cols), data.meta.rows, data.meta.cols);
-
     Perceptron p[10] = { 0 };
     uint32_t wcount = data.meta.rows * data.meta.cols;
     for (size_t i = 0; i < 10; i++) {
@@ -289,15 +301,15 @@ int main(void) {
         pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
     }
 
-    pthread_t print_thread;
-    pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
+    // pthread_t print_thread;
+    // pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
 
     for (int i = 0; i < number_of_processors; i++) {
         pthread_join(threads[i], NULL);
     }
 
     training_finished = true;
-    pthread_join(print_thread, NULL);
+    // pthread_join(print_thread, NULL);
 
 #if 0
     InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Let Me Guess!");
@@ -310,7 +322,7 @@ int main(void) {
             unmark_mouse_pos();
         } else if (IsKeyPressed(KEY_SPACE))  {
             uint8_t *image = make_image();
-            uint8_t label = find_label(image, 28, 28, p, 10);
+            uint8_t label = find_label(image, p, 10);
             printf("Guessed: %u\n", label);
             print_image2(image, 28, 28);
         } else if (IsKeyPressed(KEY_R))  {
@@ -336,9 +348,7 @@ int main(void) {
     int correct_guesses = 0;
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
         uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
-        uint8_t label = find_label(image, 28, 28, p, 10);
-        // printf("[%d] Guessed: %d. Actual: %d\n", i, label, testing_data.labels[i]);
-        // print_image2(image, 28, 28);
+        uint8_t label = find_label(image, p, 10);
         if (label == testing_data.labels[i]) correct_guesses++;
     }
 
