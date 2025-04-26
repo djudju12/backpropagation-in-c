@@ -445,7 +445,7 @@ ERROR:
     return false;
 }
 
-bool test_model(Perceptron *ps, bool verbose) {
+bool test_model(Perceptron *ps) {
     Data testing_data = {0};
     if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
         return false;
@@ -455,11 +455,11 @@ bool test_model(Perceptron *ps, bool verbose) {
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
         uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
         uint8_t label = find_label(image, ps);
-        if (verbose) {
-            printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
-            print_image(image);
-        }
         if (label == testing_data.labels[i]) correct_guesses++;
+#ifdef PRINT_ASCII_IMAGES
+        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
+        print_image(image);
+#endif
     }
 
     print_results(testing_data.meta.size, correct_guesses);
@@ -498,7 +498,10 @@ bool init_training() {
         pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
     }
 
-    print_training_status(ps);
+    if (training_parameters.verbose) {
+        print_training_status(ps);
+    }
+
     for (int i = 0; i < training_parameters.threads; i++) {
         pthread_join(threads[i], NULL);
     }
@@ -511,26 +514,35 @@ bool init_training() {
 
     printf("Total training time: %.3f secs\n", diff_in_secs);
 
-    if (!test_model(ps, training_parameters.verbose)) {
+    if (!test_model(ps)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
 
-    if (!dump_perceptrons(training_parameters.output_path, ps)) {
-        fprintf(stderr, "ERROR: failed to save model\n");
-        return false;
+    if (training_parameters.output_path == NULL) {
+        char buffer[128];
+        sprintf(buffer, "lr_%.4f-tl_%.4f-itrs_%d.model", training_parameters.lr, training_parameters.tolerance, training_parameters.max_iters);
+        if (!dump_perceptrons(buffer, ps)) {
+            fprintf(stderr, "ERROR: failed to save model\n");
+            return false;
+        }
+    } else {
+        if (!dump_perceptrons(training_parameters.output_path, ps)) {
+            fprintf(stderr, "ERROR: failed to save model\n");
+            return false;
+        }
     }
 
     return true;
 }
 
-bool load_model_and_test(char *model_path, bool verbose) {
+bool load_model_and_test(char *model_path) {
     Perceptron ps[10] = {0};
     if (!load_perceptrons(model_path, ps)) {
         return false;
     }
 
-    if (!test_model(ps, verbose)) {
+    if (!test_model(ps)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
@@ -582,7 +594,7 @@ char* shift(int *argc, char ***argv) {
 void usage(char *program_name) {
     printf(
 "Usage:\n"
-"  %s --train --out <output-file> [--max-iters <n>] [--tolerance <value>] [--lr <rate>] [--threads <n>]\n"
+"  %s --train [--out <output-file>] [--max-iters <n>] [--tolerance <value>] [--lr <rate>] [--threads <n>]\n"
 "  %s --gui --model <model-file>\n"
 "  %s --test --model <model-file>\n"
 "  %s --help\n",
@@ -595,7 +607,7 @@ void usage(char *program_name) {
 "  --gui                Launch the graphical interface.\n"
 "  --test               Run test data on the model.\n"
 "  --model <file>       Input model file (required for GUI).\n"
-"  --out <file>         Output file for the trained model (required for training).\n"
+"  --out <file>         Output file for the trained model.\n"
 "  --max-iters <n>      Maximum number of iterations [default: %d].\n"
 "  --tolerance <value>  Sets the minimum error required to stop training early [default: %.3f].\n"
 "  --lr <rate>          Learning rate [default: %.3f].\n"
@@ -617,14 +629,7 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        if (strcmp(shift(&argc, &argv), "--out") != 0) {
-            usage(program_name);
-            return 1;
-        }
-
-        char *outpath = shift(&argc, &argv);
         training_parameters.threads = sysconf(_SC_NPROCESSORS_ONLN);
-        training_parameters.output_path = outpath;
         while (argc > 0) {
             char *parameter = shift(&argc, &argv);
             if (strcmp(parameter, "--verbose") == 0) {
@@ -644,6 +649,8 @@ int main(int argc, char **argv) {
                     training_parameters.lr = atof(value);
                 } else if (strcmp(parameter, "--threads") == 0) {
                     training_parameters.threads = atoi(value);
+                } else if (strcmp(parameter, "--out") == 0) {
+                    training_parameters.output_path = value;
                 }
             }
 
@@ -689,16 +696,7 @@ int main(int argc, char **argv) {
         }
 
         char *model_path = shift(&argc, &argv);
-
-        bool verbose = false;
-        while (argc > 0) {
-            if (strcmp(shift(&argc, &argv), "--verbose") == 0) {
-                verbose = true;
-                break;
-            }
-        }
-
-        if (!load_model_and_test(model_path, verbose)) {
+        if (!load_model_and_test(model_path)) {
             return 1;
         }
     } else if (strcmp(mode, "--help") == 0) {
