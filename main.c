@@ -11,15 +11,24 @@
 #include <raylib.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define RADIUS 35
+
+static struct {
+    double tolerance;
+    double lr;
+    int max_iters;
+    char *output_path;
+    int threads;
+} training_parameters = {
+    .lr = 0.5,
+    .tolerance = 0.02,
+    .max_iters = 50,
+};
+
+#define RADIUS 28
 #define IMAGE_SIZE 28
 #define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
 
 static bool pixels[WINDOW_SIZE][WINDOW_SIZE];
-
-#define LEARNING_RATE 0.5
-#define GAMMA 0.02
-#define TOTAL_ITERATIONS 50
 
 typedef struct {
     double *ws;
@@ -45,12 +54,12 @@ typedef struct {
     pthread_mutex_t *mut;
 } Thread_Data;
 
-void print_image2(uint8_t *image, uint32_t rows, uint32_t cols) {
+void print_image(uint8_t *image) {
     static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
 
-    for (size_t y = 0; y < rows; y++) {
-        for (size_t x = 0; x < cols; x++) {
-            uint8_t v = image[cols*y + x];
+    for (size_t y = 0; y < IMAGE_SIZE; y++) {
+        for (size_t x = 0; x < IMAGE_SIZE; x++) {
+            uint8_t v = image[IMAGE_SIZE*y + x];
             printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
         }
 
@@ -66,46 +75,54 @@ bool read_data(const char *images_file_path, const char *labels_file_path, Data 
     FILE *labels_file = fopen(labels_file_path, "rb");
     FILE *images_file = fopen(images_file_path, "rb");
     if (images_file == NULL) {
-        printf("cannot open file %s\n", images_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "ERROR: cannot open file '%s'\n", images_file_path);
+        goto ERROR;
     }
 
     static unsigned char metadata_buffer[16];
     if (fread(&metadata_buffer, sizeof(metadata_buffer), 1, images_file) == 0) {
-        printf("cannot read file %s\n", images_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "ERROR: cannot read file '%s'\n", images_file_path);
+        goto ERROR;
     }
 
-    assert(big2lit(metadata_buffer) == 2051);
-    data->meta.size  = big2lit(metadata_buffer + 4);
-    data->meta.rows  = big2lit(metadata_buffer + 8);
-    data->meta.cols  = big2lit(metadata_buffer + 12);
+    if (big2lit(metadata_buffer) != 2051) {
+        fprintf(stderr, "ERROR: data file '%s' dont have correct magic number\n", images_file_path);
+        goto ERROR;
+    }
+
+    data->meta.size = big2lit(metadata_buffer + 4);
+    data->meta.rows = big2lit(metadata_buffer + 8);
+    data->meta.cols = big2lit(metadata_buffer + 12);
 
     data->images = malloc(data->meta.size * data->meta.rows * data->meta.cols * sizeof(*data->images));
     assert(data->images != NULL);
     if (fread(data->images, data->meta.rows*data->meta.cols, data->meta.size, images_file) != data->meta.size) {
-        printf("cannot read all images from file %s\n", images_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "ERROR: cannot read all images from file %s\n", images_file_path);
+        goto ERROR;
     }
 
     if (labels_file == NULL) {
-        printf("cannot open file %s\n", labels_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "ERROR: cannot open file %s\n", labels_file_path);
+        goto ERROR;
     }
 
     if (fread(&metadata_buffer, sizeof(uint32_t)*2, 1, labels_file) == 0) {
-        printf("cannot read file %s\n", labels_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "ERROR: cannot read file %s\n", labels_file_path);
+        goto ERROR;
     }
 
-    assert(big2lit(metadata_buffer) == 2049);
+    if (big2lit(metadata_buffer) != 2049) {
+        fprintf(stderr, "ERROR: labels file '%s' dont have correct magic number\n", images_file_path);
+        goto ERROR;
+    }
+
     assert(big2lit(metadata_buffer + 4) == data->meta.size);
 
     data->labels = malloc(data->meta.size * sizeof(*data->labels));
     assert(data->labels != NULL);
     if (fread(data->labels, sizeof(*data->labels), data->meta.size, labels_file) != data->meta.size) {
-        printf("cannot read all images from file %s\n", images_file_path);
-        goto CLEAN_UP;
+        fprintf(stderr, "EROR: cannot read all image labels from file %s\n", images_file_path);
+        goto ERROR;
     }
 
     fclose(labels_file);
@@ -113,7 +130,7 @@ bool read_data(const char *images_file_path, const char *labels_file_path, Data 
 
     return true;
 
-CLEAN_UP:
+ERROR:
     if (data->images) free(data->images);
     if (data->labels) free(data->labels);
     if (labels_file) fclose(labels_file);
@@ -146,10 +163,10 @@ double generate_output(double sum) {
     return sigmoid(sum);
 }
 
-int find_label(uint8_t *image, Perceptron *ps, uint32_t ps_cnt) {
+int find_label(uint8_t *image, Perceptron *ps) {
     double max = 0;
     uint8_t label = -1;
-    for (size_t i = 0; i < ps_cnt; i++) {
+    for (size_t i = 0; i < 10; i++) {
         double y = generate_output(sum_weights(image, ps[i]));
         if (y > max) {
             label = ps[i].label;
@@ -179,7 +196,7 @@ Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
 void *train_perceptron(void *args) {
     Thread_Data *td = (Thread_Data *)args;
     for (Perceptron *p = unqueue(td->ps, td->mut); p != NULL; p = unqueue(td->ps, td->mut)) {
-        for (size_t it = 0; it < TOTAL_ITERATIONS && p->stop_cond > GAMMA; it++) {
+        for (int it = 0; it < training_parameters.max_iters && p->stop_cond > training_parameters.tolerance; it++) {
             float sum_stop_cond = 0;
             for (size_t i = 0; i < td->data->meta.size; i++) {
                 size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
@@ -192,10 +209,10 @@ void *train_perceptron(void *args) {
                 sum_stop_cond += fabs(local_error);
                 for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
                     double i = td->data->images[image_index + j] / 255.0;
-                    p->ws[j] += LEARNING_RATE * local_error * i * gout;
+                    p->ws[j] += training_parameters.lr * local_error * i * gout;
                 }
 
-                p->ws[p->wcount] += LEARNING_RATE * local_error * gout;
+                p->ws[p->wcount] += training_parameters.lr * local_error * gout;
             }
 
             p->stop_cond = sum_stop_cond / td->data->meta.size;
@@ -249,7 +266,7 @@ volatile int training_finished = false;
 void *print_perceptons(void *args) {
     Perceptron *ps = (Perceptron *) args;
     while (!training_finished) {
-        printf("GAMMA: %.4f | ", GAMMA);
+        printf("GAMMA: %.4f | ", training_parameters.tolerance);;
         for (size_t i = 0; i < 10; i++) {
             printf("[%ld]: %.4f ", i, ps[i].stop_cond);
         }
@@ -265,23 +282,23 @@ static const char magic[] = "PiPi";
 bool dump_perceptrons(char *out, Perceptron *ps) {
     FILE *f = fopen(out, "wb");
     if (f == NULL) {
-        printf("ERROR: cannot open file %s\n", out);
+        fprintf(stderr, "ERROR: cannot open file %s\n", out);
         goto ERROR;
     }
 
     if (fwrite(magic, 1, ARR_SIZE(magic) - 1, f) == 0) {
-        printf("ERROR: could not write to file %s\n", out);
+        fprintf(stderr, "ERROR: could not write to file %s\n", out);
         goto ERROR;
     }
 
     for (size_t i = 0; i < 10; i++) {
         if (fwrite(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
-            printf("ERROR: could not write to file %s\n", out);
+            fprintf(stderr, "ERROR: could not write to file %s\n", out);
             goto ERROR;
         }
 
         if (fwrite(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
-            printf("ERROR: could not write to file %s\n", out);
+            fprintf(stderr, "ERROR: could not write to file %s\n", out);
             goto ERROR;
         }
     }
@@ -295,13 +312,13 @@ ERROR:
 bool load_perceptrons(char *in, Perceptron *ps) {
     FILE *f = fopen(in, "rb");
     if (f == NULL) {
-        printf("ERROR: cannot open file %s\n", in);
+        fprintf(stderr, "ERROR: cannot open file %s\n", in);
         goto ERROR;
     }
 
     static unsigned char magic_buffer[4];
     if (fread(&magic_buffer, sizeof(magic_buffer), 1, f) == 0) {
-        printf("cannot read file %s\n", in);
+        fprintf(stderr, "ERROR: cannot read file %s\n", in);
         goto ERROR;
     }
 
@@ -313,12 +330,12 @@ bool load_perceptrons(char *in, Perceptron *ps) {
         ps[i].stop_cond = 1;
 
         if (fread(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
-            printf("ERROR: could not read label in file %s\n", in);
+            fprintf(stderr, "ERROR: could not read label in file %s\n", in);
             goto ERROR;
         }
 
         if (fread(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
-            printf("ERROR: could not read label in file %s\n", in);
+            fprintf(stderr, "ERROR: could not read label in file %s\n", in);
             goto ERROR;
         }
     }
@@ -334,58 +351,101 @@ ERROR:
     return false;
 }
 
-int main(void) {
-    static char *images_file_path = "./data/train-images.idx3-ubyte";
-    static char *labels_file_path = "./data/train-labels.idx1-ubyte";
+bool test_model(Perceptron *ps) {
+    Data testing_data = {0};
+    if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
+        return false;
+    };
+
+    int correct_guesses = 0;
+    for (uint32_t i = 0; i < testing_data.meta.size; i++) {
+        uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
+        uint8_t label = find_label(image, ps);
+        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
+        print_image(image);
+        if (label == testing_data.labels[i]) correct_guesses++;
+    }
+
+    int incorrect_guesses = testing_data.meta.size - correct_guesses;
+    printf("%04d/%d\n", correct_guesses, testing_data.meta.size);
+    printf("%04d/%d\n", incorrect_guesses, testing_data.meta.size);
+    printf("%.2f%%\n", (correct_guesses/(double)testing_data.meta.size)*100);
+    printf("%.2f%%\n", (incorrect_guesses/(double)testing_data.meta.size)*100);
+    return true;
+}
+
+bool init_training() {
+    static const char *images_file_path = "./data/train-images.idx3-ubyte";
+    static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
     Data data = {0};
     read_data(images_file_path, labels_file_path, &data);
 
-    Perceptron p[10] = { 0 };
-    // uint32_t wcount = data.meta.rows * data.meta.cols;
-    // for (size_t i = 0; i < 10; i++) {
-    //     p[i].wcount = wcount;
-    //     p[i].ws = calloc(wcount + 1, sizeof(*p[i].ws));
-    //     p[i].label = i;
-    //     p[i].stop_cond = 1;
-    //     p[i].ws[wcount] = 0;
-    // }
-
-    if (!load_perceptrons("out.bin", p)) {
-        return 1;
+    Perceptron ps[10] = { 0 };
+    uint32_t wcount = data.meta.rows * data.meta.cols;
+    for (size_t i = 0; i < 10; i++) {
+        ps[i].wcount = wcount;
+        ps[i].ws = calloc(wcount + 1, sizeof(*ps[i].ws));
+        ps[i].label = i;
+        ps[i].stop_cond = 1;
+        ps[i].ws[wcount] = 0;
     }
 
-#if 0
-    long number_of_processors = sysconf(_SC_NPROCESSORS_ONLN);
-    pthread_t threads[number_of_processors];
+    static pthread_mutex_t perceptron_mut = PTHREAD_MUTEX_INITIALIZER;
+    pthread_t threads[training_parameters.threads];
 
-    pthread_mutex_t perceptron_mut = PTHREAD_MUTEX_INITIALIZER;
-    Thread_Data td = {0};
-    td.data = &data;
-    td.ps = p;
-    td.mut = &perceptron_mut;
+    Thread_Data td = {
+        .data = &data,
+        .ps = ps,
+        .mut = &perceptron_mut
+    };
 
-    for (int i = 0; i < number_of_processors; i++) {
+    for (int i = 0; i < training_parameters.threads; i++) {
         pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
     }
 
-    // pthread_t print_thread;
-    // pthread_create(&print_thread, NULL, print_perceptons, (void*)p);
+    pthread_t print_thread;
+    pthread_create(&print_thread, NULL, print_perceptons, (void*)ps);
 
-    for (int i = 0; i < number_of_processors; i++) {
+    for (int i = 0; i < training_parameters.threads; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    // training_finished = true;
-    // pthread_join(print_thread, NULL);
+    training_finished = true;
+    pthread_join(print_thread, NULL);
 
-    if (!dump_perceptrons("out.bin", p)) {
-        return 1;
+    if (!test_model(ps)) {
+        fprintf(stderr, "ERROR: failed to test model\n");
+        return false;
     }
 
-    // return 0;
-#endif
-#if 0
-    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Let Me Guess!");
+    if (!dump_perceptrons(training_parameters.output_path, ps)) {
+        fprintf(stderr, "ERROR: failed to save model\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool load_model_and_test(char *model_path) {
+    Perceptron ps[10] = {0};
+    if (!load_perceptrons(model_path, ps)) {
+        return false;
+    }
+
+    if (!test_model(ps)) {
+        fprintf(stderr, "ERROR: failed to test model\n");
+        return false;
+    }
+
+    return true;
+}
+bool load_model_and_init_gui(char *model_path) {
+    Perceptron ps[10] = {0};
+    if (!load_perceptrons(model_path, ps)) {
+        return false;
+    }
+
+    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Number Recognition");
 
     while (!WindowShouldClose()) {
         BeginDrawing();
@@ -395,9 +455,9 @@ int main(void) {
             unmark_mouse_pos();
         } else if (IsKeyPressed(KEY_SPACE))  {
             uint8_t *image = make_image();
-            uint8_t label = find_label(image, p, 10);
+            uint8_t label = find_label(image, ps);
             printf("Guessed: %u\n", label);
-            print_image2(image, 28, 28);
+            print_image(image);
         } else if (IsKeyPressed(KEY_R))  {
             for (size_t y = 0; y < WINDOW_SIZE; y++) {
                 for (size_t x = 0; x < WINDOW_SIZE; x++) {
@@ -414,22 +474,128 @@ int main(void) {
 
     CloseWindow();
 
-#else
-    Data testing_data = {0};
-    read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data);
+    return true;
+}
 
-    int correct_guesses = 0;
-    for (uint32_t i = 0; i < testing_data.meta.size; i++) {
-        uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
-        uint8_t label = find_label(image, p, 10);
-        if (label == testing_data.labels[i]) correct_guesses++;
+char* shift(int *argc, char ***argv) {
+    return (*argc)--, *(*argv)++;
+}
+
+void usage(char *program_name) {
+    printf(
+"Usage:\n"
+"  %s --train --out <output-file> [--max-iters <n>] [--tolerance <value>] [--lr <rate>] [--threads <n>]\n"
+"  %s --gui --model <model-file>\n"
+"  %s --test --model <model-file>\n"
+"  %s --help\n",
+    program_name, program_name, program_name, program_name);
+
+    printf(
+"\nOptions:\n"
+"  --help               Prints this message.\n"
+"  --train              Train a new model.\n"
+"  --gui                Launch the graphical interface.\n"
+"  --test               Run test data on the model.\n"
+"  --model <file>       Input model file (required for GUI).\n"
+"  --out <file>         Output file for the trained model (required for training).\n"
+"  --max-iters <n>      Maximum number of iterations [default: %d].\n"
+"  --tolerance <value>  Sets the minimum error required to stop training early [default: %.3f].\n"
+"  --lr <rate>          Learning rate [default: %.3f].\n"
+"  --threads <n>        Number of parallel threads [default: %d].\n",
+    training_parameters.max_iters, training_parameters.tolerance, training_parameters.lr, 4);;
+}
+
+int main(int argc, char **argv) {
+    char *program_name = shift(&argc, &argv);
+    if (argc == 0) {
+        usage(program_name);
+        return 1;
     }
 
-    int incorrect_guesses = testing_data.meta.size - correct_guesses;
-    printf("%04d/%d\n", correct_guesses, testing_data.meta.size);
-    printf("%04d/%d\n", incorrect_guesses, testing_data.meta.size);
-    printf("%.2f%%\n", (correct_guesses/(double)testing_data.meta.size)*100);
-    printf("%.2f%%\n", (incorrect_guesses/(double)testing_data.meta.size)*100);
-#endif
+    char *mode = shift(&argc, &argv);
+    if (strcmp(mode, "--train") == 0) {
+        if (argc == 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        if (strcmp(shift(&argc, &argv), "--out") != 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        char *outpath = shift(&argc, &argv);
+        training_parameters.threads = sysconf(_SC_NPROCESSORS_ONLN);
+        training_parameters.output_path = outpath;
+        while (argc > 0) {
+            char *parameter = shift(&argc, &argv);
+            if (argc == 0) {
+                usage(program_name);
+                return 1;
+            }
+
+            char *value = shift(&argc, &argv);
+            if (strcmp(parameter, "--max-iters") == 0) {
+                training_parameters.max_iters = atoi(value);
+            } else if (strcmp(parameter, "--tolerance") == 0) {
+                training_parameters.tolerance = atof(value);
+            } else if (strcmp(parameter, "--lr") == 0) {
+                training_parameters.lr = atof(value);
+            } else if (strcmp(parameter, "--threads") == 0) {
+                training_parameters.threads = atoi(value);
+            }
+        }
+
+        if (!init_training()) {
+            return 1;
+        }
+    } else if (strcmp(mode, "--gui") == 0) {
+        if (argc == 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        if (strcmp(shift(&argc, &argv), "--model") != 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        if (argc == 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        char *model_path = shift(&argc, &argv);
+        if (!load_model_and_init_gui(model_path)) {
+            return 1;
+        }
+    } else if (strcmp(mode, "--test") == 0) {
+        if (argc == 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        if (strcmp(shift(&argc, &argv), "--model") != 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        if (argc == 0) {
+            usage(program_name);
+            return 1;
+        }
+
+        char *model_path = shift(&argc, &argv);
+        if (!load_model_and_test(model_path)) {
+            return 1;
+        }
+    } else if (strcmp(mode, "--help") == 0) {
+        usage(program_name);
+    } else {
+        printf("ERROR: invalid mode %s\n", mode);
+        usage(program_name);
+        return 1;
+    }
+
     return 0;
 }
