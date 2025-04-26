@@ -37,13 +37,13 @@ Currently, the API does not support changing the training dataset directly — b
 
 ## TODOs
 
-- [ ] add train mode
-- [ ] add gui mode
-- [ ] print errors to stderr
+- [X] add train mode
+- [X] add gui mode
+- [X] print errors to stderr
 - [ ] print state of training in training mode
 - [ ] create a better ui to show the result
-- [ ] remove all '28' values from code
-- [ ] remove all '28*28' values from code
+- [X] remove all '28' values from code
+- [X] remove all '28*28' values from code
 - [ ] optimize training by applying some techniques
   - [ ] calculate all norm data values in advance
   - [ ] pre calculate the sigmoid values

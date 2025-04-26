@@ -18,10 +18,12 @@ static struct {
     int max_iters;
     char *output_path;
     int threads;
+    bool verbose;
 } training_parameters = {
     .lr = 0.5,
     .tolerance = 0.02,
     .max_iters = 50,
+    .verbose = false
 };
 
 #define RADIUS 28
@@ -351,7 +353,7 @@ ERROR:
     return false;
 }
 
-bool test_model(Perceptron *ps) {
+bool test_model(Perceptron *ps, bool verbose) {
     Data testing_data = {0};
     if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
         return false;
@@ -361,8 +363,10 @@ bool test_model(Perceptron *ps) {
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
         uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
         uint8_t label = find_label(image, ps);
-        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
-        print_image(image);
+        if (verbose) {
+            printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
+            print_image(image);
+        }
         if (label == testing_data.labels[i]) correct_guesses++;
     }
 
@@ -413,7 +417,7 @@ bool init_training() {
     training_finished = true;
     pthread_join(print_thread, NULL);
 
-    if (!test_model(ps)) {
+    if (!test_model(ps, training_parameters.verbose)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
@@ -426,13 +430,13 @@ bool init_training() {
     return true;
 }
 
-bool load_model_and_test(char *model_path) {
+bool load_model_and_test(char *model_path, bool verbose) {
     Perceptron ps[10] = {0};
     if (!load_perceptrons(model_path, ps)) {
         return false;
     }
 
-    if (!test_model(ps)) {
+    if (!test_model(ps, verbose)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
@@ -529,21 +533,26 @@ int main(int argc, char **argv) {
         training_parameters.output_path = outpath;
         while (argc > 0) {
             char *parameter = shift(&argc, &argv);
-            if (argc == 0) {
-                usage(program_name);
-                return 1;
+            if (strcmp(parameter, "--verbose") == 0) {
+                training_parameters.verbose = true;
+            } else {
+                if (argc == 0) {
+                    usage(program_name);
+                    return 1;
+                }
+
+                char *value = shift(&argc, &argv);
+                if (strcmp(parameter, "--max-iters") == 0) {
+                    training_parameters.max_iters = atoi(value);
+                } else if (strcmp(parameter, "--tolerance") == 0) {
+                    training_parameters.tolerance = atof(value);
+                } else if (strcmp(parameter, "--lr") == 0) {
+                    training_parameters.lr = atof(value);
+                } else if (strcmp(parameter, "--threads") == 0) {
+                    training_parameters.threads = atoi(value);
+                }
             }
 
-            char *value = shift(&argc, &argv);
-            if (strcmp(parameter, "--max-iters") == 0) {
-                training_parameters.max_iters = atoi(value);
-            } else if (strcmp(parameter, "--tolerance") == 0) {
-                training_parameters.tolerance = atof(value);
-            } else if (strcmp(parameter, "--lr") == 0) {
-                training_parameters.lr = atof(value);
-            } else if (strcmp(parameter, "--threads") == 0) {
-                training_parameters.threads = atoi(value);
-            }
         }
 
         if (!init_training()) {
@@ -586,7 +595,16 @@ int main(int argc, char **argv) {
         }
 
         char *model_path = shift(&argc, &argv);
-        if (!load_model_and_test(model_path)) {
+
+        bool verbose = false;
+        while (argc > 0) {
+            if (strcmp(shift(&argc, &argv), "--verbose") == 0) {
+                verbose = true;
+                break;
+            }
+        }
+
+        if (!load_model_and_test(model_path, verbose)) {
             return 1;
         }
     } else if (strcmp(mode, "--help") == 0) {
