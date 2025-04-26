@@ -1,3 +1,4 @@
+#define __USE_POSIX199309
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 
 #include <raylib.h>
 
@@ -37,6 +39,7 @@ typedef struct {
     uint32_t wcount;
     uint8_t label;
     float stop_cond;
+    int it;
 } Perceptron;
 
 typedef struct {
@@ -181,8 +184,8 @@ int find_label(uint8_t *image, Perceptron *ps) {
 
 #define PERCEPTRON_CNT 10
 Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
-    pthread_mutex_lock(mut);
     static size_t head = 0;
+    pthread_mutex_lock(mut);
     if (head >= PERCEPTRON_CNT) {
         pthread_mutex_unlock(mut);
         return NULL;
@@ -195,10 +198,23 @@ Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
     return &queue[my_perceptron];
 }
 
+pthread_mutex_t all_trained_mut = PTHREAD_MUTEX_INITIALIZER;
+static int trained = 0;
+void report_trained() {
+    pthread_mutex_lock(&all_trained_mut);
+    trained += 1;
+    pthread_mutex_unlock(&all_trained_mut);
+}
+
+bool all_trained() {
+    assert(trained >= 0 && trained <= 10);
+    return trained == 10;
+}
+
 void *train_perceptron(void *args) {
     Thread_Data *td = (Thread_Data *)args;
     for (Perceptron *p = unqueue(td->ps, td->mut); p != NULL; p = unqueue(td->ps, td->mut)) {
-        for (int it = 0; it < training_parameters.max_iters && p->stop_cond > training_parameters.tolerance; it++) {
+        for (p->it = 0; p->it < training_parameters.max_iters && p->stop_cond > training_parameters.tolerance; p->it++) {
             float sum_stop_cond = 0;
             for (size_t i = 0; i < td->data->meta.size; i++) {
                 size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
@@ -219,6 +235,8 @@ void *train_perceptron(void *args) {
 
             p->stop_cond = sum_stop_cond / td->data->meta.size;
         }
+
+        report_trained();
     }
 
     return NULL;
@@ -264,20 +282,94 @@ uint8_t *make_image() {
     return (uint8_t*) buffer;
 }
 
-volatile int training_finished = false;
-void *print_perceptons(void *args) {
-    Perceptron *ps = (Perceptron *) args;
-    while (!training_finished) {
-        printf("GAMMA: %.4f | ", training_parameters.tolerance);;
-        for (size_t i = 0; i < 10; i++) {
-            printf("[%ld]: %.4f ", i, ps[i].stop_cond);
-        }
+static void _print_training_status(Perceptron *ps) {
+    // +---------------------+
+    // | Training Status     |
+    // +----+-------+--------+
+    // |  N | iters |  error |
+    // +----+-------+--------+
+    // |  0 |     1 | 0.0148 |
+    // |  1 |     1 | 0.0139 |
+    // |  2 |     1 | 0.0291 |
+    // |  3 |     1 | 0.0348 |
+    // |  4 |     1 | 0.0263 |
+    // |  5 |     1 | 0.0396 |
+    // |  6 |     1 | 0.0202 |
+    // |  7 |     1 | 0.0230 |
+    // |  8 |     1 | 0.0571 |
+    // |  9 |     1 | 0.0492 |
+    // +----+-------+--------+
 
-        printf("\n\r");
+
+    printf("+---------------------+\n");
+    printf("| Training Status     |\n");
+    printf("+----+-------+--------+\n");
+    printf("|  N | iters |  error |\n");
+    printf("+----+-------+--------+\n");
+    for (int i = 0; i < 10; i++) {
+        printf("\x1b[2K");
+        // TODO: better formatting when it passes 100k
+        printf("| %2d | %5d | %.4f |\n", ps[i].label, ps[i].it, ps[i].stop_cond);
+    }
+    printf("+----+-------+--------+\n");
+}
+
+void print_parameters() {
+    // +------------------------+
+    // | Training Parameters    |
+    // +---------------+--------+
+    // | Tolerance     | 0.0200 |
+    // | Learning Rate | 0.5000 |
+    // | Max Iterations|      1 |
+    // | Threads       |      4 |
+    // +---------------+--------+
+    printf("\n+---------------------+\n");
+    printf("| Training Parameters |\n");
+    printf("+------------+--------+\n");
+    printf("| Tolerance  | %.4f |\n", training_parameters.tolerance);
+    printf("| LR         | %.4f |\n", training_parameters.lr);
+    printf("| Max Iters  |   %04d |\n", training_parameters.max_iters);
+    printf("| N Threads  |     %2d |\n", training_parameters.threads);
+    printf("+------------+--------+\n");
+}
+
+void print_training_status(Perceptron *ps) {
+    static const int line_cnt = 25;
+    printf("\x1b[2J\x1b[H");
+    _print_training_status(ps);
+    print_parameters();
+    printf("\x1b[%dA", line_cnt);
+    while (!all_trained()) {
+        printf("\x1b[%dA", line_cnt - 9);
+        _print_training_status(ps);
     }
 
+    print_parameters();
     printf("\n");
-    return NULL;
+}
+
+void print_results(int total, int correct) {
+    // +----------------------------------+
+    // | Model Statistics                 |
+    // +------------------------+---------+
+    // | Correct Predictions    |  8905   |
+    // | Incorrect Predictions  |  1095   |
+    // | Accuracy               |  89.05% |
+    // | Error                  |  10.95% |
+    // +------------------------+---------+
+
+    int incorrect_guesses = total - correct;
+    float acc = (correct/(double)total)*100;
+    float err = (incorrect_guesses/(double)total)*100;
+
+    printf("+----------------------------------+\n");
+    printf("| Model Statistics                 |\n");
+    printf("+------------------------+---------+\n");
+    printf("| Correct Predicitions   |  %04d   |\n", correct);
+    printf("| Incorrect Predicitions |  %04d   |\n", incorrect_guesses);
+    printf("| Accuracy               |  %05.2f%% |\n", acc);
+    printf("| Error                  |  %05.2f%% |\n", err);
+    printf("+------------------------+---------+\n");
 }
 
 static const char magic[] = "PiPi";
@@ -370,11 +462,7 @@ bool test_model(Perceptron *ps, bool verbose) {
         if (label == testing_data.labels[i]) correct_guesses++;
     }
 
-    int incorrect_guesses = testing_data.meta.size - correct_guesses;
-    printf("%04d/%d\n", correct_guesses, testing_data.meta.size);
-    printf("%04d/%d\n", incorrect_guesses, testing_data.meta.size);
-    printf("%.2f%%\n", (correct_guesses/(double)testing_data.meta.size)*100);
-    printf("%.2f%%\n", (incorrect_guesses/(double)testing_data.meta.size)*100);
+    print_results(testing_data.meta.size, correct_guesses);
     return true;
 }
 
@@ -403,19 +491,25 @@ bool init_training() {
         .mut = &perceptron_mut
     };
 
+
+    struct timespec start, end;
+    assert(clock_gettime(CLOCK_MONOTONIC, &start) >= 0);
     for (int i = 0; i < training_parameters.threads; i++) {
         pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
     }
 
-    pthread_t print_thread;
-    pthread_create(&print_thread, NULL, print_perceptons, (void*)ps);
-
+    print_training_status(ps);
     for (int i = 0; i < training_parameters.threads; i++) {
         pthread_join(threads[i], NULL);
     }
 
-    training_finished = true;
-    pthread_join(print_thread, NULL);
+    assert(clock_gettime(CLOCK_MONOTONIC, &end) >= 0);
+
+    float start_sec = start.tv_sec + start.tv_nsec/10e9;
+    float end_sec = end.tv_sec + end.tv_nsec/10e9;
+    float diff_in_secs = end_sec - start_sec;
+
+    printf("Total training time: %.3f secs\n", diff_in_secs);
 
     if (!test_model(ps, training_parameters.verbose)) {
         fprintf(stderr, "ERROR: failed to test model\n");
