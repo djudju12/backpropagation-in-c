@@ -19,6 +19,7 @@ static struct {
     double lr;
     int max_iters;
     char *output_path;
+    char *output_dir_path;
     int threads;
     bool verbose;
 } training_parameters = {
@@ -466,6 +467,18 @@ bool test_model(Perceptron *ps) {
     return true;
 }
 
+char *concat_path(char *dir, char *file) {
+    assert(file != NULL);
+    if (dir == NULL) return file;
+    int dir_len = strlen(dir) + 1;
+    assert(dir_len < 512 - 1 && "directory name is too big");
+    static char buffer[512];
+    memcpy(buffer, dir, dir_len);
+    buffer[dir_len-1] = '/';
+    strncpy(buffer + dir_len, file, 512 - dir_len);
+    return buffer;
+}
+
 bool init_training() {
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
     static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
@@ -520,14 +533,14 @@ bool init_training() {
     }
 
     if (training_parameters.output_path == NULL) {
-        char buffer[128];
+        static char buffer[256];
         sprintf(buffer, "lr_%.4f-tl_%.4f-itrs_%d.model", training_parameters.lr, training_parameters.tolerance, training_parameters.max_iters);
-        if (!dump_perceptrons(buffer, ps)) {
+        if (!dump_perceptrons(concat_path(training_parameters.output_dir_path, buffer), ps)) {
             fprintf(stderr, "ERROR: failed to save model\n");
             return false;
         }
     } else {
-        if (!dump_perceptrons(training_parameters.output_path, ps)) {
+        if (!dump_perceptrons(concat_path(training_parameters.output_dir_path, training_parameters.output_path), ps)) {
             fprintf(stderr, "ERROR: failed to save model\n");
             return false;
         }
@@ -608,6 +621,7 @@ void usage(char *program_name) {
 "  --test               Run test data on the model.\n"
 "  --model <file>       Input model file (required for GUI).\n"
 "  --out <file>         Output file for the trained model.\n"
+"  --out-dir <file>     Output directory for the trained model.\n"
 "  --max-iters <n>      Maximum number of iterations [default: %d].\n"
 "  --tolerance <value>  Sets the minimum error required to stop training early [default: %.3f].\n"
 "  --lr <rate>          Learning rate [default: %.3f].\n"
@@ -624,11 +638,6 @@ int main(int argc, char **argv) {
 
     char *mode = shift(&argc, &argv);
     if (strcmp(mode, "--train") == 0) {
-        if (argc == 0) {
-            usage(program_name);
-            return 1;
-        }
-
         training_parameters.threads = sysconf(_SC_NPROCESSORS_ONLN);
         while (argc > 0) {
             char *parameter = shift(&argc, &argv);
@@ -636,6 +645,7 @@ int main(int argc, char **argv) {
                 training_parameters.verbose = true;
             } else {
                 if (argc == 0) {
+                    fprintf(stderr, "ERROR: missing parameter '%s' value\n", parameter);
                     usage(program_name);
                     return 1;
                 }
@@ -651,6 +661,8 @@ int main(int argc, char **argv) {
                     training_parameters.threads = atoi(value);
                 } else if (strcmp(parameter, "--out") == 0) {
                     training_parameters.output_path = value;
+                } else if (strcmp(parameter, "--out-dir") == 0) {
+                    training_parameters.output_dir_path = value;
                 }
             }
 
@@ -660,17 +672,14 @@ int main(int argc, char **argv) {
             return 1;
         }
     } else if (strcmp(mode, "--gui") == 0) {
-        if (argc == 0) {
-            usage(program_name);
-            return 1;
-        }
-
-        if (strcmp(shift(&argc, &argv), "--model") != 0) {
+        if (argc == 0 || strcmp(shift(&argc, &argv), "--model") != 0) {
+            fprintf(stderr, "ERROR: missing parameter '--model'\n");
             usage(program_name);
             return 1;
         }
 
         if (argc == 0) {
+            fprintf(stderr, "ERROR: missing parameter '--model' value\n");
             usage(program_name);
             return 1;
         }
@@ -680,17 +689,14 @@ int main(int argc, char **argv) {
             return 1;
         }
     } else if (strcmp(mode, "--test") == 0) {
-        if (argc == 0) {
-            usage(program_name);
-            return 1;
-        }
-
-        if (strcmp(shift(&argc, &argv), "--model") != 0) {
+        if (argc == 0 || strcmp(shift(&argc, &argv), "--model") != 0) {
+            fprintf(stderr, "ERROR: missing parameter '--model'\n");
             usage(program_name);
             return 1;
         }
 
         if (argc == 0) {
+            fprintf(stderr, "ERROR: missing parameter '--model' value\n");
             usage(program_name);
             return 1;
         }
