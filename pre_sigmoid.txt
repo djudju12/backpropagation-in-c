@@ -1,0 +1,9 @@
+Total training time: 20.014 secs
++----------------------------------+
+| Model Statistics                 |
++------------------------+---------+
+| Correct Predicitions   |  9018   |
+| Incorrect Predicitions |  0982   |
+| Accuracy               |  90.18% |
+| Error                  |  09.82% |
++------------------------+---------+

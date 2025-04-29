@@ -155,7 +155,7 @@ ERROR:
 }
 
 double sigmoid(double sum) {
-    return 1 / (1 + exp(-sum));
+    return .5 * (sum / (1 + fabs(sum)) + 1);
 }
 
 double sum_weights(double *image, Perceptron p) {
@@ -528,12 +528,16 @@ bool init_training() {
         pthread_join(threads[i], NULL);
     }
 
+    if (!training_parameters.verbose) {
+        _print_training_status(ps);
+        print_parameters();
+    }
+
     assert(clock_gettime(CLOCK_MONOTONIC, &end) >= 0);
 
     float start_sec = start.tv_sec + start.tv_nsec/10e9;
     float end_sec = end.tv_sec + end.tv_nsec/10e9;
     float diff_in_secs = end_sec - start_sec;
-
     printf("Total training time: %.3f secs\n", diff_in_secs);
 
     if (!test_model(ps)) {
@@ -571,6 +575,7 @@ bool load_model_and_test(char *model_path) {
 
     return true;
 }
+
 bool load_model_and_init_gui(char *model_path) {
     Perceptron ps[10] = {0};
     if (!load_perceptrons(model_path, ps)) {
