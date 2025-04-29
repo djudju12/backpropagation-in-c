@@ -50,7 +50,7 @@ typedef struct {
         uint32_t cols;
     } meta;
 
-    uint8_t *images;
+    double *_images;
     uint8_t *labels;
 } Data;
 
@@ -60,12 +60,12 @@ typedef struct {
     pthread_mutex_t *mut;
 } Thread_Data;
 
-void print_image(uint8_t *image) {
+void print_image(double *image) {
     static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
 
     for (size_t y = 0; y < IMAGE_SIZE; y++) {
         for (size_t x = 0; x < IMAGE_SIZE; x++) {
-            uint8_t v = image[IMAGE_SIZE*y + x];
+            uint8_t v = image[IMAGE_SIZE*y + x] * 255.0;
             printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
         }
 
@@ -100,12 +100,21 @@ bool read_data(const char *images_file_path, const char *labels_file_path, Data 
     data->meta.rows = big2lit(metadata_buffer + 8);
     data->meta.cols = big2lit(metadata_buffer + 12);
 
-    data->images = malloc(data->meta.size * data->meta.rows * data->meta.cols * sizeof(*data->images));
-    assert(data->images != NULL);
-    if (fread(data->images, data->meta.rows*data->meta.cols, data->meta.size, images_file) != data->meta.size) {
+    size_t total_pixels = data->meta.size * data->meta.rows * data->meta.cols;
+    uint8_t *images = malloc(total_pixels * sizeof(*images));
+    assert(images != NULL);
+    if (fread(images, data->meta.rows*data->meta.cols, data->meta.size, images_file) != data->meta.size) {
         fprintf(stderr, "ERROR: cannot read all images from file %s\n", images_file_path);
         goto ERROR;
     }
+
+    data->_images = malloc(total_pixels * sizeof(*data->_images));
+    assert(data->_images != NULL);
+    for (size_t i = 0; i < total_pixels; i++) {
+        data->_images[i] = images[i] / 255.0;
+    }
+
+    free(images);
 
     if (labels_file == NULL) {
         fprintf(stderr, "ERROR: cannot open file %s\n", labels_file_path);
@@ -137,7 +146,7 @@ bool read_data(const char *images_file_path, const char *labels_file_path, Data 
     return true;
 
 ERROR:
-    if (data->images) free(data->images);
+    if (data->_images) free(data->_images);
     if (data->labels) free(data->labels);
     if (labels_file) fclose(labels_file);
     if (images_file) fclose(images_file);
@@ -149,10 +158,10 @@ double sigmoid(double sum) {
     return 1 / (1 + exp(-sum));
 }
 
-double sum_weights(uint8_t *image, Perceptron p) {
+double sum_weights(double *image, Perceptron p) {
     double sum = 0;
     for (uint32_t j = 0; j < p.wcount; j++) {
-        sum += p.ws[j] * (image[j] / 255.0);
+        sum += p.ws[j] * image[j];
     }
 
     sum += p.ws[p.wcount];
@@ -169,7 +178,7 @@ double generate_output(double sum) {
     return sigmoid(sum);
 }
 
-int find_label(uint8_t *image, Perceptron *ps) {
+int find_label(double *image, Perceptron *ps) {
     double max = 0;
     uint8_t label = -1;
     for (size_t i = 0; i < 10; i++) {
@@ -220,14 +229,14 @@ void *train_perceptron(void *args) {
             for (size_t i = 0; i < td->data->meta.size; i++) {
                 size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
                 size_t image_index = (i * total_pixels);
-                double sum = sum_weights(td->data->images + image_index, *p);
+                double sum = sum_weights(td->data->_images + image_index, *p);
                 double y = generate_output(sum);
                 double gout = gradient_output(sum);
                 double dy = p->label == td->data->labels[i] ? 1.0 : 0.0;
                 double local_error = dy - y;
                 sum_stop_cond += fabs(local_error);
                 for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
-                    double i = td->data->images[image_index + j] / 255.0;
+                    double i = td->data->_images[image_index + j];
                     p->ws[j] += training_parameters.lr * local_error * i * gout;
                 }
 
@@ -263,8 +272,8 @@ void paint_marks(void) {
     }
 }
 
-uint8_t *make_image() {
-    static uint8_t buffer[IMAGE_SIZE][IMAGE_SIZE];
+double *make_image() {
+    static double buffer[IMAGE_SIZE][IMAGE_SIZE];
     Image window_image = LoadImageFromScreen();
     for (size_t iy = 0; iy < IMAGE_SIZE; iy++) {
         for (size_t ix = 0; ix < IMAGE_SIZE; ix++) {
@@ -276,11 +285,11 @@ uint8_t *make_image() {
                 }
             }
 
-            buffer[iy][ix] = (sum/IMAGE_SIZE*IMAGE_SIZE);
+            buffer[iy][ix] = (sum/IMAGE_SIZE*IMAGE_SIZE) / 255.0;
         }
     }
 
-    return (uint8_t*) buffer;
+    return (double*) buffer;
 }
 
 static void _print_training_status(Perceptron *ps) {
@@ -454,7 +463,7 @@ bool test_model(Perceptron *ps) {
 
     int correct_guesses = 0;
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
-        uint8_t *image = testing_data.images + (i * testing_data.meta.cols * testing_data.meta.rows);
+        double *image = testing_data._images + (i * testing_data.meta.cols * testing_data.meta.rows);
         uint8_t label = find_label(image, ps);
         if (label == testing_data.labels[i]) correct_guesses++;
 #ifdef PRINT_ASCII_IMAGES
@@ -577,7 +586,7 @@ bool load_model_and_init_gui(char *model_path) {
         } else if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
             unmark_mouse_pos();
         } else if (IsKeyPressed(KEY_SPACE))  {
-            uint8_t *image = make_image();
+            double *image = make_image();
             uint8_t label = find_label(image, ps);
             printf("Guessed: %u\n", label);
             print_image(image);
