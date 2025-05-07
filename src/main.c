@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include <raylib.h>
+#include <raymath.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
 
@@ -33,6 +34,10 @@ static struct {
 #define IMAGE_SIZE 28
 #define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
 #define PADDING 100
+#define CARD_SIZE 60
+#define CARD_PADDING 15
+// // #define TOTAL_CARDS (WINDOW_SIZE-PADDING*2)/(CARD_SIZE+CARD_PADDING)
+// #define TOTAL_CARDS 6
 
 static Color pixels[WINDOW_SIZE][WINDOW_SIZE];
 
@@ -542,9 +547,9 @@ void mark_mouse_pos(Color color) {
     int px = (int) (pos.x - MARK_SIZE/2);
     int py = (int) (pos.y - MARK_SIZE/2);
 
-    for (size_t y = 0; y < MARK_SIZE; y++) {
+    for (int y = 0; y < MARK_SIZE; y++) {
         int cy = py + y;
-        for (size_t x = 0; x < MARK_SIZE; x++) {
+        for (int x = 0; x < MARK_SIZE; x++) {
             int cx = px + x;
             if (cy > PADDING && cx > PADDING && cy < (WINDOW_SIZE - PADDING) && cx < (WINDOW_SIZE - PADDING)) {
                 pixels[cy][cx] = color;
@@ -593,6 +598,31 @@ double *make_image() {
     return (double*) buffer;
 }
 
+void draw_card(int i, int current_image, int total_cards, float xoffset_cards, double *images, Texture2D texture) {
+    int image_i = current_image + i - total_cards/2;
+    if (image_i >= 0) {
+        UpdateTexture(texture, make_screen_pixels(images + (int)(image_i*IMAGE_SIZE*IMAGE_SIZE)));
+
+        DrawTexturePro(
+            texture,
+            (Rectangle) { .height = IMAGE_SIZE, .width =  IMAGE_SIZE, .x = 0, .y = 0 },
+            (Rectangle) { .height = CARD_SIZE, .width = CARD_SIZE, .x = xoffset_cards + (CARD_SIZE + CARD_PADDING)*i, .y = WINDOW_SIZE - PADDING/2 - CARD_SIZE/2 },
+            (Vector2) {0},
+            0.0,
+            WHITE
+        );
+    }
+
+
+    DrawRectangleLines(
+        xoffset_cards + (CARD_SIZE + CARD_PADDING)*i,
+        WINDOW_SIZE - PADDING/2 - CARD_SIZE/2,
+        CARD_SIZE,
+        CARD_SIZE,
+        image_i == current_image ? GREEN : WHITE
+    );
+}
+
 bool load_model_and_init_gui(char *model_path) {
     Perceptron ps[10] = {0};
     if (!load_perceptrons(model_path, ps)) {
@@ -612,17 +642,26 @@ bool load_model_and_init_gui(char *model_path) {
         }
     }
 
+    size_t total_cards = (WINDOW_SIZE-PADDING*2)/(CARD_SIZE+CARD_PADDING);
+    if (total_cards%2==0) total_cards--;
+    float xoffset_cards = WINDOW_SIZE/2.0 - ((CARD_SIZE+CARD_PADDING)*total_cards)/2.0 + CARD_PADDING/2.0;
+
     Image img = GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK);
     Texture2D texture = LoadTextureFromImage(img);
     Texture2D window_texture = LoadTextureFromImage(LoadImageFromScreen());
+    Texture2D card_textures[total_cards];
+    for (size_t i = 0; i < total_cards; i++) {
+        card_textures[i] = LoadTextureFromImage(GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK));
+    }
+
     int8_t guess = find_label(testing_data._images, ps);
     UpdateTexture(texture, make_screen_pixels(testing_data._images));
-    uint32_t image_index = 0;
+    size_t image_index = 0;
     bool drawining_mode = false;
 
     int8_t label = -1;
     static char buffer[32];
-    uint32_t current_image = 0;
+    size_t current_image = 0;
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_M)) drawining_mode = !drawining_mode;
 
@@ -711,6 +750,17 @@ bool load_model_and_init_gui(char *model_path) {
                 0.0,
                 WHITE
             );
+
+            // Cards
+            for (size_t i = 0; i < total_cards/2; i++) {
+                draw_card(i, current_image, total_cards, xoffset_cards, testing_data._images, card_textures[i]);
+            }
+
+            draw_card(total_cards/2, current_image, total_cards, xoffset_cards, testing_data._images, card_textures[total_cards/2]);
+
+            for (size_t i = (total_cards/2) + 1; i < total_cards; i++) {
+                draw_card(i, current_image, total_cards, xoffset_cards, testing_data._images, card_textures[i]);
+            }
 
             DrawRectangleLines(PADDING, PADDING, WINDOW_SIZE - PADDING*2, WINDOW_SIZE - PADDING*2, WHITE);
             EndDrawing();
