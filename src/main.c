@@ -180,7 +180,7 @@ double generate_output(double sum) {
 
 int find_label(double *image, Perceptron *ps) {
     double max = 0;
-    uint8_t label = -1;
+    int8_t label = -1;
     for (size_t i = 0; i < 10; i++) {
         double y = generate_output(sum_weights(image, ps[i]));
         if (y > max) {
@@ -270,26 +270,6 @@ void paint_marks(void) {
             }
         }
     }
-}
-
-double *make_image() {
-    static double buffer[IMAGE_SIZE][IMAGE_SIZE];
-    Image window_image = LoadImageFromScreen();
-    for (size_t iy = 0; iy < IMAGE_SIZE; iy++) {
-        for (size_t ix = 0; ix < IMAGE_SIZE; ix++) {
-            uint32_t sum = 0;
-            for (size_t wy = 0; wy < IMAGE_SIZE; wy++) {
-                for (size_t wx = 0; wx < IMAGE_SIZE; wx++) {
-                    Color c = GetImageColor(window_image, (ix*IMAGE_SIZE) + wx, (iy*IMAGE_SIZE) + wy);
-                    sum += (c.r + c.g + c.b)/3;
-                }
-            }
-
-            buffer[iy][ix] = (sum/IMAGE_SIZE*IMAGE_SIZE) / 255.0;
-        }
-    }
-
-    return (double*) buffer;
 }
 
 static void _print_training_status(Perceptron *ps) {
@@ -459,7 +439,7 @@ bool test_model(Perceptron *ps) {
     Data testing_data = {0};
     if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
         return false;
-    };
+    }
 
     int correct_guesses = 0;
     for (uint32_t i = 0; i < testing_data.meta.size; i++) {
@@ -576,35 +556,101 @@ bool load_model_and_test(char *model_path) {
     return true;
 }
 
+Color * make_screen_pixels(double *image) {
+    static Color pixels[IMAGE_SIZE][IMAGE_SIZE];
+
+    for (size_t y = 0; y < IMAGE_SIZE; y++) {
+        for (size_t x = 0; x < IMAGE_SIZE; x++) {
+            float pixel = *(image + y*IMAGE_SIZE + x) * 255.0;
+            pixels[y][x].r = pixel; // r
+            pixels[y][x].g = pixel; // g
+            pixels[y][x].b = pixel; // b
+            pixels[y][x].a = 255;   // a
+        }
+    }
+
+
+    return (Color *) pixels;
+}
+
+double *make_image() {
+    static double buffer[IMAGE_SIZE][IMAGE_SIZE];
+    Image window_image = LoadImageFromScreen();
+    for (size_t iy = 0; iy < IMAGE_SIZE; iy++) {
+        for (size_t ix = 0; ix < IMAGE_SIZE; ix++) {
+            uint32_t sum = 0;
+            for (size_t wy = 0; wy < IMAGE_SIZE; wy++) {
+                for (size_t wx = 0; wx < IMAGE_SIZE; wx++) {
+                    Color c = GetImageColor(window_image, (ix*IMAGE_SIZE) + wx, (iy*IMAGE_SIZE) + wy);
+                    sum += (c.r + c.g + c.b)/3;
+                }
+            }
+
+            buffer[iy][ix] = (sum/IMAGE_SIZE*IMAGE_SIZE) / 255.0;
+        }
+    }
+
+    return (double*) buffer;
+}
+
 bool load_model_and_init_gui(char *model_path) {
     Perceptron ps[10] = {0};
     if (!load_perceptrons(model_path, ps)) {
         return false;
     }
 
+    Data testing_data = {0};
+    if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
+        return false;
+    }
+
     InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Number Recognition");
 
+    Image img = GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK);
+    Texture2D texture = LoadTextureFromImage(img);
+
+    uint32_t current_image = 0;
     while (!WindowShouldClose()) {
         BeginDrawing();
-        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-            mark_mouse_pos();
-        } else if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-            unmark_mouse_pos();
-        } else if (IsKeyPressed(KEY_SPACE))  {
-            double *image = make_image();
-            uint8_t label = find_label(image, ps);
-            printf("Guessed: %u\n", label);
-            print_image(image);
-        } else if (IsKeyPressed(KEY_R))  {
-            for (size_t y = 0; y < WINDOW_SIZE; y++) {
-                for (size_t x = 0; x < WINDOW_SIZE; x++) {
-                    pixels[y][x] = false;
-                }
-            }
+
+        if (IsKeyPressed(KEY_RIGHT) && current_image < testing_data.meta.size) {
+            current_image++;
+        } else if (IsKeyPressed(KEY_LEFT) && current_image > 0) {
+            current_image--;
         }
 
-        ClearBackground(BLACK);
-        paint_marks();
+        // Selected number
+        void *pixels = make_screen_pixels(testing_data._images + (current_image*IMAGE_SIZE*IMAGE_SIZE));
+        UpdateTexture(texture, pixels);
+
+        DrawTexturePro(
+            texture,
+            (Rectangle) { .height = IMAGE_SIZE, .width =  IMAGE_SIZE, .x = 0, .y = 0 },
+            (Rectangle) { .height = WINDOW_SIZE, .width =  WINDOW_SIZE, .x = 0, .y = 0 },
+            (Vector2) {0},
+            0.0,
+            WHITE
+        );
+
+        // DrawTexture(texture, 0, 0, WHITE);
+        // if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+        //     mark_mouse_pos();
+        // } else if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        //     unmark_mouse_pos();
+        // } else if (IsKeyPressed(KEY_SPACE))  {
+        //     double *image = make_image();
+        //     uint8_t label = find_label(image, ps);
+        //     printf("Guessed: %u\n", label);
+        //     print_image(image);
+        // } else if (IsKeyPressed(KEY_R))  {
+        //     for (size_t y = 0; y < WINDOW_SIZE; y++) {
+        //         for (size_t x = 0; x < WINDOW_SIZE; x++) {
+        //             pixels[y][x] = false;
+        //         }
+        //     }
+        // }
+
+        // paint_marks();
 
         EndDrawing();
     }
