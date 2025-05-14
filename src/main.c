@@ -458,7 +458,9 @@ bool init_training() {
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
     static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
     Data data = {0};
-    read_data(images_file_path, labels_file_path, &data);
+    if (!read_data(images_file_path, labels_file_path, &data)) {
+        return false;
+    }
 
     Perceptron ps[10] = { 0 };
     uint32_t wcount = data.meta.rows * data.meta.cols;
