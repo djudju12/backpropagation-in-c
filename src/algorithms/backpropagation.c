@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
@@ -24,120 +25,293 @@ typedef struct {
 // Offcourse, its way more error prone handle pointer arithmetics. A more consice memory
 // layout can be considered
 typedef struct {
-    double **weights;          // weigths of neuron `x` in the layer `y` = (weigths[y] + x*weights_count[y])
-    uint32_t *weights_count;
+    double **weights;          // weigths of neuron `x` in the layer `y` = (weigths[y] + x*weights_cnt[y])
+    uint32_t *weights_cnt;
     uint32_t *neuron_cnt;
     uint32_t layer_count;
 
     // transient fields
     double **errors;          // layer -> neuron -> error
-    double **values;          // layer -> neuron
+    double **values;          // layer -> neuron -> values
 
 } Model;
 
-// #define LOG_WRITE_ERROR(file) fprintf(stderr, "ERROR: could not write to file %s\n", (file))
-// #define LOG_READ_ERROR(file) fprintf(stderr, "ERROR: could not read from file %s\n", (file))
+#define LR 0.3
 
-// static const char magic[] = "JRNA";
-// bool dump_model(char *out, Model *model) {
-//     FILE *f = fopen(out, "wb");
-//     bool ok = false;
-//     if (f == NULL) {
-//         fprintf(stderr, "ERROR: cannot open file %s\n", out);
-//         goto ERROR;
-//     }
+double sigmoid(double sum) {
+    return .5 * (sum / (1 + fabs(sum)) + 1);
+}
 
-//     if (fwrite(magic, 1, ARR_SIZE(magic) - 1, f) == 0) {
-//         LOG_WRITE_ERROR(out);
-//         goto ERROR;
-//     }
+double sum_weights(double *weights, double *values, size_t cnt) {
+    double sum = 0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        sum += weights[i] * values[i];
+    }
 
-//     if (fwrite(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
-//         LOG_WRITE_ERROR(out);
-//         goto ERROR;
-//     }
+    sum += weights[cnt]; // bias
 
-//     for (size_t layer = 0; layer < model->layer_count; layer++) {
-//         uint32_t neurons_cnt = model->neuron_cnt[layer];
-//         uint32_t weights_count = model->weights_count[layer];
-//         uint32_t total_weights = neurons_cnt*weights_count;
+    return sum;
+}
 
-//         if (fwrite(&neurons_cnt, sizeof(neurons_cnt), 1, f) == 0) {
-//             LOG_WRITE_ERROR(out);
-//             goto ERROR;
-//         }
+double *get_neuron_weights(Model *model, uint32_t layer, uint32_t neuron) {
+    return model->weights[layer] + neuron*(model->weights_cnt[layer] + 1);
+}
 
-//         if (fwrite(&weights_count, sizeof(weights_count), 1, f) == 0) {
-//             LOG_WRITE_ERROR(out);
-//             goto ERROR;
-//         }
+void train_model(Model *model, Data *training_data) {
+    const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
 
-//         if (fwrite(model->weights[layer], sizeof(double), total_weights, f) != total_weights) {
-//             LOG_WRITE_ERROR(out);
-//             goto ERROR;
-//         }
-//     }
+    for (size_t _n = 0; _n < 10; _n++) {
+        for (size_t i = 0; i < training_data->meta.size; i++) {
+            size_t image_index = (i * total_pixels);
+            int8_t label = training_data->labels[i];
 
-//     ok = true;
-// ERROR:
-//     if(f) fclose(f);
-//     return ok;
-// }
+            double *values = training_data->_images + image_index;
+            for (size_t layer = 0; layer < model->layer_count; layer++) {
 
-// bool load_model(char *in, Model *model) {
-//     FILE *f = fopen(in, "rb");
-//     if (f == NULL) {
-//         fprintf(stderr, "ERROR: cannot open file %s\n", in);
-//         goto ERROR;
-//     }
+                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
 
-//     static unsigned char magic_buffer[4];
-//     if (fread(&magic_buffer, sizeof(magic_buffer), 1, f) == 0) {
-//         LOG_READ_ERROR(in);
-//         goto ERROR;
-//     }
+                    double sum = sum_weights(
+                        get_neuron_weights(model, layer, neuron),
+                        values,
+                        model->weights_cnt[layer]
+                    );
+                    model->values[layer][neuron] = sigmoid(sum);
+                }
 
-//     if (memcmp(magic, magic_buffer, 4) != 0) {
-//         fprintf(stderr, "ERROR: first 4 bytes of file %s dont match magic constant %*s\n", in, 4, magic);
-//         goto ERROR;
-//     }
+                values = model->values[layer];
+            }
 
-//     if (fread(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
-//         LOG_READ_ERROR(in);
-//         goto ERROR;
-//     }
+            const size_t out_layer = model->layer_count - 1;
+            for (int out_neuron = 0; out_neuron < (int) model->neuron_cnt[out_layer]; out_neuron++) {
+                double desired = out_neuron == label ? 1. : 0.;
+                double y = model->values[out_layer][out_neuron];
+                double error = (desired - y) * y * (1.0 - y);
+                double *weights = get_neuron_weights(model, out_layer, out_neuron);
+                for (size_t w_index = 0; w_index < model->weights_cnt[out_layer]; w_index++) {
+                    double delta = LR * error * model->values[out_layer - 1][w_index];
+                    weights[w_index] += delta;
+                }
 
-//     for (size_t i = 0; i < model->layer_count; i++) {
+                weights[model->weights_cnt[out_layer]] += LR*error;
+                model->errors[out_layer][out_neuron] = error;
+            }
 
-//     }
+            for (int layer = out_layer - 1; layer >= 0; layer--) {
+                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
+                    double error_sum = 0.0;
 
-//     for (size_t i = 0; i < 10; i++) {
-//         ps[i].wcount = 28*28;
-//         ps[i].ws = malloc((ps[i].wcount + 1) * sizeof(*ps[i].ws));
-//         ps[i].ws[ps[i].wcount] = 0;
-//         ps[i].stop_cond = 1;
+                    for (size_t next_neuron = 0; next_neuron < model->neuron_cnt[layer + 1]; next_neuron++) {
+                        double error = model->errors[layer + 1][next_neuron];
+                        double w = get_neuron_weights(model, layer + 1, next_neuron)[neuron];
+                        error_sum += w*error;
+                    }
 
-//         if (fread(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
-//             fprintf(stderr, "ERROR: could not read label in file %s\n", in);
-//             goto ERROR;
-//         }
+                    double y = model->values[layer][neuron];
+                    double error = error_sum * y * (1.0 - y);
 
-//         if (fread(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
-//             fprintf(stderr, "ERROR: could not read label in file %s\n", in);
-//             goto ERROR;
-//         }
-//     }
+                    double *values_ = layer == 0 ? (training_data->_images + image_index) : model->values[layer - 1];
+                    double *weights = get_neuron_weights(model, layer, neuron);
+                    for (size_t w_index = 0; w_index < model->weights_cnt[layer]; w_index++) {
+                        weights[w_index] += LR * error * values_[w_index];
+                    }
 
-//     fclose(f);
-//     return true;
+                    weights[model->weights_cnt[layer]] += LR * error;
+                    model->errors[layer][neuron] = error;
+                }
+            }
+        }
+    }
+}
 
-// ERROR:
-//     if(f) fclose(f);
-//     for (size_t i = 0; i < 10; i++) {
-//         if (ps[i].ws) free(ps[i].ws);
-//     }
-//     return false;
-// }
+int find_label(Model *model, double *image) {
+    double *values = image;
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
+            double sum = sum_weights(
+                get_neuron_weights(model, layer, neuron),
+                values,
+                model->weights_cnt[layer]
+            );
+            model->values[layer][neuron] = sigmoid(sum);
+        }
+
+        values = model->values[layer];
+    }
+
+    int label = 0;
+    for (size_t out_neuron = 1; out_neuron < model->neuron_cnt[model->layer_count - 1]; out_neuron++) {
+        if (model->values[model->layer_count - 1][out_neuron] > model->values[model->layer_count - 1][label]) {
+            label = out_neuron;
+        }
+    }
+
+    return label;
+}
+
+void print_results(int total, int correct) {
+    // +----------------------------------+
+    // | Model Statistics                 |
+    // +------------------------+---------+
+    // | Correct Predictions    |  8905   |
+    // | Incorrect Predictions  |  1095   |
+    // | Accuracy               |  89.05% |
+    // | Error                  |  10.95% |
+    // +------------------------+---------+
+
+    int incorrect_guesses = total - correct;
+    float acc = (correct/(double)total)*100;
+    float err = (incorrect_guesses/(double)total)*100;
+
+    printf("+----------------------------------+\n");
+    printf("| Model Statistics                 |\n");
+    printf("+------------------------+---------+\n");
+    printf("| Correct Predicitions   |  %04d   |\n", correct);
+    printf("| Incorrect Predicitions |  %04d   |\n", incorrect_guesses);
+    printf("| Accuracy               |  %05.2f%% |\n", acc);
+    printf("| Error                  |  %05.2f%% |\n", err);
+    printf("+------------------------+---------+\n");
+}
+
+void print_image(double *image, size_t size) {
+    static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
+
+    for (size_t y = 0; y < size; y++) {
+        for (size_t x = 0; x < size; x++) {
+            uint8_t v = image[size*y + x] * 255.0;
+            printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
+        }
+
+        printf("\n");
+    }
+}
+
+void allocate_model(Model *model) {
+    uint32_t layer_cnt = model->layer_count;
+    model->values = malloc(sizeof(*model->values) * layer_cnt);
+    assert(model->values != NULL);
+
+    model->errors = malloc(sizeof(*model->errors) * layer_cnt);
+    assert(model->errors != NULL);
+
+    model->weights = malloc(sizeof(model->weights) * layer_cnt);
+    assert(model->weights != NULL);
+
+    model->weights_cnt = malloc(sizeof(*model->weights_cnt) * layer_cnt);
+    assert(model->weights_cnt != NULL);
+
+    if (model->neuron_cnt == NULL) {
+        model->neuron_cnt = malloc(sizeof(*model->neuron_cnt) * layer_cnt);
+        assert(model->neuron_cnt != NULL);
+    }
+}
+
+#define LOG_WRITE_ERROR(file) fprintf(stderr, "ERROR: could not write to file %s\n", file)
+#define LOG_READ_ERROR(msg, file) fprintf(stderr, "ERROR: could not read %s from file %s\n", msg, file)
+
+static const char magic[] = "JRNA";
+bool dump_model(char *out, Model *model) {
+    FILE *f = fopen(out, "wb");
+    bool ok = false;
+    if (f == NULL) {
+        fprintf(stderr, "ERROR: cannot open file %s\n", out);
+        goto ERROR;
+    }
+
+    if (fwrite(magic, 1, ARR_SIZE(magic) - 1, f) == 0) {
+        LOG_WRITE_ERROR(out);
+        goto ERROR;
+    }
+
+    if (fwrite(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
+        LOG_WRITE_ERROR(out);
+        goto ERROR;
+    }
+
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        uint32_t neurons_cnt = model->neuron_cnt[layer];
+        uint32_t weights_cnt = model->weights_cnt[layer];
+        uint32_t total_weights = neurons_cnt*(weights_cnt + 1); // + 1 bias
+
+        if (fwrite(&neurons_cnt, sizeof(neurons_cnt), 1, f) == 0) {
+            LOG_WRITE_ERROR(out);
+            goto ERROR;
+        }
+
+        if (fwrite(&weights_cnt, sizeof(weights_cnt), 1, f) == 0) {
+            LOG_WRITE_ERROR(out);
+            goto ERROR;
+        }
+
+        if (fwrite(model->weights[layer], sizeof(double), total_weights, f) != total_weights) {
+            LOG_WRITE_ERROR(out);
+            goto ERROR;
+        }
+    }
+
+    ok = true;
+ERROR:
+    if(f) fclose(f);
+    return ok;
+}
+
+bool load_model(char *in, Model *model) {
+    FILE *f = fopen(in, "rb");
+    bool status = false;
+    if (f == NULL) {
+        fprintf(stderr, "ERROR: cannot open file %s\n", in);
+        goto ERROR;
+    }
+
+    static unsigned char magic_buffer[4];
+    if (fread(&magic_buffer, sizeof(magic_buffer), 1, f) == 0) {
+        LOG_READ_ERROR("magic value", in);
+        goto ERROR;
+    }
+
+    if (memcmp(magic, magic_buffer, 4) != 0) {
+        fprintf(stderr, "ERROR: first 4 bytes of file %s dont match magic constant %*s\n", in, 4, magic);
+        goto ERROR;
+    }
+
+    if (fread(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
+        LOG_READ_ERROR("layer_count", in);
+        goto ERROR;
+    }
+
+    // pre allocate a bunch of fields
+    allocate_model(model);
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        if (fread(&model->neuron_cnt[layer], sizeof(model->neuron_cnt[layer]), 1, f) == 0) {
+            LOG_READ_ERROR("neuron count", in);
+            goto ERROR;
+        }
+
+        if (fread(&model->weights_cnt[layer], sizeof(model->weights_cnt[layer]), 1, f) == 0) {
+            LOG_READ_ERROR("weights count", in);
+            goto ERROR;
+        }
+
+        model->values[layer] = malloc(sizeof(*model->values[layer]) * model->neuron_cnt[layer]);
+        assert(model->values[layer] != NULL);
+
+        model->errors[layer] = malloc(sizeof(*model->errors[layer]) * model->neuron_cnt[layer]);
+        assert(model->errors[layer] != NULL);
+
+        // + 1 for bias
+        uint32_t total_weights = (model->weights_cnt[layer] + 1) * model->neuron_cnt[layer];
+        model->weights[layer] = malloc(sizeof(double)*total_weights);
+        assert(model->weights[layer] != NULL);
+        if (fread(model->weights[layer], sizeof(double), total_weights, f) != total_weights) {
+            LOG_READ_ERROR("weights", in);
+            goto ERROR;
+        }
+    }
+
+    status = true;
+ERROR:
+    if(f) fclose(f);
+    return status;
+}
 
 uint32_t big2lit(unsigned char *buffer) {
     return (uint32_t) buffer[3] | (uint32_t) buffer[2] << 8 | (uint32_t) buffer[1] << 16 | (uint32_t) buffer[0] << 24;
@@ -220,158 +394,33 @@ ERROR:
     return false;
 }
 
-#define LR 0.3
-
-double sigmoid(double sum) {
-    return .5 * (sum / (1 + fabs(sum)) + 1);
+double rand_w(float min, float max) {
+    return min + (float)rand()/(float)RAND_MAX*(max-min);
 }
 
-double sum_weights(double *weights, double *values, size_t cnt) {
-    double sum = 0;
-    for (uint32_t i = 0; i < cnt; i++) {
-        sum += weights[i] * values[i];
-    }
+// Make sure to the the `neuron_cnt` in the model before initialization
+void init_model(Model *model, Data *data) {
+    allocate_model(model);
 
-    sum += weights[cnt]; // bias
-
-    return sum;
-}
-
-double *get_neuron_weights(Model *model, uint32_t layer, uint32_t neuron) {
-    return model->weights[layer] + neuron*(model->weights_count[layer] + 1);
-}
-
-void train_model(Model *model, Data *training_data) {
-    const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
-
-    for (size_t _n = 0; _n < 10; _n++) {
-        for (size_t i = 0; i < training_data->meta.size; i++) {
-            size_t image_index = (i * total_pixels);
-            int8_t label = training_data->labels[i];
-
-            double *values = training_data->_images + image_index;
-            for (size_t layer = 0; layer < model->layer_count; layer++) {
-
-                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
-                    // double sum = sum_weights(model->weights[layer][neuron], values, model->weights_count[layer]);
-
-                    double sum = sum_weights(
-                        get_neuron_weights(model, layer, neuron),
-                        values,
-                        model->weights_count[layer]
-                    );
-                    model->values[layer][neuron] = sigmoid(sum);
-                }
-
-                values = model->values[layer];
-            }
-
-            const size_t out_layer = model->layer_count - 1;
-            for (int out_neuron = 0; out_neuron < (int) model->neuron_cnt[out_layer]; out_neuron++) {
-                double desired = out_neuron == label ? 1. : 0.;
-                double y = model->values[out_layer][out_neuron];
-                double error = (desired - y) * y * (1.0 - y);
-                double *weights = get_neuron_weights(model, out_layer, out_neuron);
-                for (size_t w_index = 0; w_index < model->weights_count[out_layer]; w_index++) {
-                    double delta = LR * error * model->values[out_layer - 1][w_index];
-                    weights[w_index] += delta;
-                    // model->weights[out_layer][out_neuron][w_index] += delta;
-                }
-
-                weights[model->weights_count[out_layer]] += LR*error;
-                model->errors[out_layer][out_neuron] = error;
-            }
-
-            for (int layer = out_layer - 1; layer >= 0; layer--) {
-                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
-                    double error_sum = 0.0;
-
-                    for (size_t next_neuron = 0; next_neuron < model->neuron_cnt[layer + 1]; next_neuron++) {
-                        double error = model->errors[layer + 1][next_neuron];
-                        // double w = model->weights[layer + 1][next_neuron][neuron];
-
-                        double w = get_neuron_weights(model, layer + 1, next_neuron)[neuron];
-                        error_sum += w*error;
-                    }
-
-                    double y = model->values[layer][neuron];
-                    double error = error_sum * y * (1.0 - y);
-
-                    double *values_ = layer == 0 ? (training_data->_images + image_index) : model->values[layer - 1];
-                    double *weights = get_neuron_weights(model, layer, neuron);
-                    for (size_t w_index = 0; w_index < model->weights_count[layer]; w_index++) {
-                        // model->weights[layer][neuron][w_index] += LR * error * values_[w_index];
-                        weights[w_index] += LR * error * values_[w_index];
-                    }
-
-                    weights[model->weights_count[layer]] += LR * error;
-                    model->errors[layer][neuron] = error;
-                }
-            }
-        }
-    }
-}
-
-int find_label(Model *model, double *image) {
-    double *values = image;
     for (size_t layer = 0; layer < model->layer_count; layer++) {
-        for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
-            // double sum = sum_weights(model->weights[layer][neuron], values, model->weights_count[layer]);
-            double sum = sum_weights(
-                get_neuron_weights(model, layer, neuron),
-                values,
-                model->weights_count[layer]
-            );
-            model->values[layer][neuron] = sigmoid(sum);
+        model->values[layer] = malloc(sizeof(*model->values[layer]) * model->neuron_cnt[layer]);
+        assert(model->values[layer] != NULL);
+
+        model->errors[layer] = malloc(sizeof(*model->errors[layer]) * model->neuron_cnt[layer]);
+        assert(model->errors[layer] != NULL);
+
+        if (layer == 0) {
+            model->weights_cnt[layer] = data->meta.cols*data->meta.rows;
+        } else {
+            model->weights_cnt[layer] = model->neuron_cnt[layer - 1];
         }
 
-        values = model->values[layer];
-    }
-
-    int label = 0;
-    for (size_t out_neuron = 1; out_neuron < model->neuron_cnt[model->layer_count - 1]; out_neuron++) {
-        if (model->values[model->layer_count - 1][out_neuron] > model->values[model->layer_count - 1][label]) {
-            label = out_neuron;
+        // + 1 for bias
+        size_t total_weights = (model->weights_cnt[layer] + 1) * model->neuron_cnt[layer];
+        model->weights[layer] = malloc(sizeof(double)*total_weights);
+        for (size_t w = 0; w < total_weights; w++) {
+            model->weights[layer][w] = rand_w(-0.5, 0.5);
         }
-    }
-
-    return label;
-}
-
-void print_results(int total, int correct) {
-    // +----------------------------------+
-    // | Model Statistics                 |
-    // +------------------------+---------+
-    // | Correct Predictions    |  8905   |
-    // | Incorrect Predictions  |  1095   |
-    // | Accuracy               |  89.05% |
-    // | Error                  |  10.95% |
-    // +------------------------+---------+
-
-    int incorrect_guesses = total - correct;
-    float acc = (correct/(double)total)*100;
-    float err = (incorrect_guesses/(double)total)*100;
-
-    printf("+----------------------------------+\n");
-    printf("| Model Statistics                 |\n");
-    printf("+------------------------+---------+\n");
-    printf("| Correct Predicitions   |  %04d   |\n", correct);
-    printf("| Incorrect Predicitions |  %04d   |\n", incorrect_guesses);
-    printf("| Accuracy               |  %05.2f%% |\n", acc);
-    printf("| Error                  |  %05.2f%% |\n", err);
-    printf("+------------------------+---------+\n");
-}
-
-void print_image(double *image, size_t size) {
-    static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
-
-    for (size_t y = 0; y < size; y++) {
-        for (size_t x = 0; x < size; x++) {
-            uint8_t v = image[size*y + x] * 255.0;
-            printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
-        }
-
-        printf("\n");
     }
 }
 
@@ -395,48 +444,6 @@ bool test_model(Model *model) {
     return true;
 }
 
-
-double rand_w(float min, float max) {
-    return min + (float)rand()/(float)RAND_MAX*(max-min);
-}
-
-// Make sure to the the `neuron_cnt` in the model before initialization
-void init_model(Model *model, Data *data) {
-    uint32_t layer_cnt = model->layer_count;
-    model->values = malloc(sizeof(*model->values) * layer_cnt);
-    assert(model->values != NULL);
-
-    model->errors = malloc(sizeof(*model->errors) * layer_cnt);
-    assert(model->errors != NULL);
-
-    model->weights = malloc(sizeof(model->weights) * layer_cnt);
-    assert(model->weights != NULL);
-
-    model->weights_count = malloc(sizeof(*model->weights_count) * layer_cnt);
-    assert(model->weights_count != NULL);
-
-    for (size_t layer = 0; layer < layer_cnt; layer++) {
-        model->values[layer] = malloc(sizeof(*model->values[layer]) * model->neuron_cnt[layer]);
-        assert(model->values[layer] != NULL);
-
-        model->errors[layer] = malloc(sizeof(*model->errors[layer]) * model->neuron_cnt[layer]);
-        assert(model->errors[layer] != NULL);
-
-        if (layer == 0) {
-            model->weights_count[layer] = data->meta.cols*data->meta.rows;
-        } else {
-            model->weights_count[layer] = model->neuron_cnt[layer - 1];
-        }
-
-        // + 1 for bias
-        size_t total_weights = (model->weights_count[layer] + 1) * model->neuron_cnt[layer];
-        model->weights[layer] = malloc(sizeof(double)*total_weights);
-        for (size_t w = 0; w < total_weights; w++) {
-            model->weights[layer][w] = rand_w(-0.5, 0.5);
-        }
-    }
-}
-
 int main(void) {
     srand(time(NULL));
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
@@ -446,10 +453,20 @@ int main(void) {
         return 1;
     }
 
-    // Model model = { .neuron_cnt = {64, 32, 10} };
-    Model model = { .neuron_cnt = (uint32_t [3]) {64, 32, 10}, .layer_count = 3 };
-    init_model(&model, &data);
-    train_model(&model, &data);
+    // Model model = { .neuron_cnt = (uint32_t [3]) {64, 32, 10}, .layer_count = 3 };
+    // init_model(&model, &data);
+    // train_model(&model, &data);
+    // test_model(&model);
+
+    // if (!dump_model("out.model", &model)) {
+    //     return 1;
+    // }
+
+    Model model = {0};
+    if (!load_model("out.model", &model)) {
+        return 1;
+    }
+
     test_model(&model);
     return 0;
 }
