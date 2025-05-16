@@ -9,11 +9,21 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
+#include <float.h>
 
 #include <raylib.h>
 #include <raymath.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
+#define MARK_SIZE 32
+#define IMAGE_SIZE 28
+#define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
+#define PADDING 100
+#define CARD_SIZE 60
+#define CARD_PADDING 15
+
+#define LOG_WRITE_ERROR(file) fprintf(stderr, "ERROR: could not write to file %s\n", file)
+#define LOG_READ_ERROR(msg, file) fprintf(stderr, "ERROR: could not read %s from file %s\n", msg, file)
 
 static struct {
     double tolerance;
@@ -30,24 +40,23 @@ static struct {
     .verbose = false
 };
 
-#define MARK_SIZE 32
-#define IMAGE_SIZE 28
-#define WINDOW_SIZE IMAGE_SIZE*IMAGE_SIZE
-#define PADDING 100
-#define CARD_SIZE 60
-#define CARD_PADDING 15
-// // #define TOTAL_CARDS (WINDOW_SIZE-PADDING*2)/(CARD_SIZE+CARD_PADDING)
-// #define TOTAL_CARDS 6
+// TODO:
+// We use pointers directly in the model because its easy to deserialize in this way
+// Offcourse, its way more error prone handle pointer arithmetics. A more consice memory
+// layout can be considered
+typedef struct {
+    double **weights;          // weigths of neuron `x` in the layer `y` = (weigths[y] + x*weights_cnt[y])
+    uint32_t *weights_cnt;
+    uint32_t *neuron_cnt;
+    uint32_t layer_count;
+
+    // transient fields
+    double **errors;          // layer -> neuron -> error
+    double **values;          // layer -> neuron -> values
+
+} RNA_Model;
 
 static Color pixels[WINDOW_SIZE][WINDOW_SIZE];
-
-typedef struct {
-    double *ws;
-    uint32_t wcount;
-    uint8_t label;
-    float stop_cond;
-    int it;
-} Perceptron;
 
 typedef struct {
     struct {
@@ -59,12 +68,6 @@ typedef struct {
     double *_images;
     uint8_t *labels;
 } Data;
-
-typedef struct {
-    Perceptron *ps;
-    Data *data;
-    pthread_mutex_t *mut;
-} Thread_Data;
 
 void print_image(double *image) {
     static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
@@ -164,130 +167,120 @@ double sigmoid(double sum) {
     return .5 * (sum / (1 + fabs(sum)) + 1);
 }
 
-double sum_weights(double *image, Perceptron p) {
+double sum_weights(double *weights, double *values, size_t cnt) {
     double sum = 0;
-    for (uint32_t j = 0; j < p.wcount; j++) {
-        sum += p.ws[j] * image[j];
+    for (uint32_t i = 0; i < cnt; i++) {
+        sum += weights[i] * values[i];
     }
 
-    sum += p.ws[p.wcount];
+    sum += weights[cnt]; // bias
 
     return sum;
 }
 
-double gradient_output(double sum) {
-    double s = sigmoid(sum);
-    return s * (1-s);
+double *get_neuron_weights(RNA_Model *model, uint32_t layer, uint32_t neuron) {
+    return model->weights[layer] + neuron*(model->weights_cnt[layer] + 1);
 }
 
-double generate_output(double sum) {
-    return sigmoid(sum);
-}
+int find_label(RNA_Model *model, double *image) {
+    double *values = image;
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
+            double sum = sum_weights(
+                get_neuron_weights(model, layer, neuron),
+                values,
+                model->weights_cnt[layer]
+            );
+            model->values[layer][neuron] = sigmoid(sum);
+        }
 
-int find_label(double *image, Perceptron *ps) {
-    double max = 0;
-    int8_t label = -1;
-    for (size_t i = 0; i < 10; i++) {
-        double y = generate_output(sum_weights(image, ps[i]));
-        if (y > max) {
-            label = ps[i].label;
-            max = y;
+        values = model->values[layer];
+    }
+
+    int label = 0;
+    for (size_t out_neuron = 1; out_neuron < model->neuron_cnt[model->layer_count - 1]; out_neuron++) {
+        if (model->values[model->layer_count - 1][out_neuron] > model->values[model->layer_count - 1][label]) {
+            label = out_neuron;
         }
     }
 
     return label;
 }
 
-#define PERCEPTRON_CNT 10
-Perceptron *unqueue(Perceptron *queue, pthread_mutex_t *mut) {
-    static size_t head = 0;
-    pthread_mutex_lock(mut);
-    if (head >= PERCEPTRON_CNT) {
-        pthread_mutex_unlock(mut);
-        return NULL;
-    }
+void train_model(RNA_Model *model, Data *training_data) {
+    const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
 
-    size_t my_perceptron = head;
-    head += 1;
+    double global_error = 0;
+    for (int it = 0; it < training_parameters.max_iters; it++) {
+        for (size_t i = 0; i < training_data->meta.size; i++) {
+            size_t image_index = (i * total_pixels);
+            int8_t label = training_data->labels[i];
 
-    pthread_mutex_unlock(mut);
-    return &queue[my_perceptron];
-}
+            double *values = training_data->_images + image_index;
+            for (size_t layer = 0; layer < model->layer_count; layer++) {
 
-pthread_mutex_t all_trained_mut = PTHREAD_MUTEX_INITIALIZER;
-static int trained = 0;
-void report_trained() {
-    pthread_mutex_lock(&all_trained_mut);
-    trained += 1;
-    pthread_mutex_unlock(&all_trained_mut);
-}
+                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
 
-bool all_trained() {
-    assert(trained >= 0 && trained <= 10);
-    return trained == 10;
-}
+                    double sum = sum_weights(
+                        get_neuron_weights(model, layer, neuron),
+                        values,
+                        model->weights_cnt[layer]
+                    );
 
-void *train_perceptron(void *args) {
-    Thread_Data *td = (Thread_Data *)args;
-    for (Perceptron *p = unqueue(td->ps, td->mut); p != NULL; p = unqueue(td->ps, td->mut)) {
-        for (p->it = 0; p->it < training_parameters.max_iters && p->stop_cond > training_parameters.tolerance; p->it++) {
-            float sum_stop_cond = 0;
-            for (size_t i = 0; i < td->data->meta.size; i++) {
-                size_t total_pixels = td->data->meta.rows*td->data->meta.cols;
-                size_t image_index = (i * total_pixels);
-                double sum = sum_weights(td->data->_images + image_index, *p);
-                double y = generate_output(sum);
-                double gout = gradient_output(sum);
-                double dy = p->label == td->data->labels[i] ? 1.0 : 0.0;
-                double local_error = dy - y;
-                sum_stop_cond += fabs(local_error);
-                for (uint32_t j = 0; j < total_pixels && j < p->wcount; j++) {
-                    double i = td->data->_images[image_index + j];
-                    p->ws[j] += training_parameters.lr * local_error * i * gout;
+                    model->values[layer][neuron] = sigmoid(sum);
                 }
 
-                p->ws[p->wcount] += training_parameters.lr * local_error * gout;
+                values = model->values[layer];
             }
 
-            p->stop_cond = sum_stop_cond / td->data->meta.size;
+            double local_error = 0.;
+            const size_t out_layer = model->layer_count - 1;
+            for (int out_neuron = 0; out_neuron < (int) model->neuron_cnt[out_layer]; out_neuron++) {
+                double desired = out_neuron == label ? 1. : 0.;
+                double y = model->values[out_layer][out_neuron];
+                double error = (desired - y) * y * (1.0 - y);
+                local_error += (desired - y) * (desired - y);
+                double *weights = get_neuron_weights(model, out_layer, out_neuron);
+                for (size_t w_index = 0; w_index < model->weights_cnt[out_layer]; w_index++) {
+                    double delta = training_parameters.lr * error * model->values[out_layer - 1][w_index];
+                    weights[w_index] += delta;
+                }
+
+                weights[model->weights_cnt[out_layer]] += training_parameters.lr * error;
+                model->errors[out_layer][out_neuron] = error;
+            }
+
+            global_error += local_error*0.5;
+
+            for (int layer = out_layer - 1; layer >= 0; layer--) {
+                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
+                    double error_sum = 0.0;
+
+                    for (size_t next_neuron = 0; next_neuron < model->neuron_cnt[layer + 1]; next_neuron++) {
+                        double error = model->errors[layer + 1][next_neuron];
+                        double w = get_neuron_weights(model, layer + 1, next_neuron)[neuron];
+                        error_sum += w*error;
+                    }
+
+                    double y = model->values[layer][neuron];
+                    double error = error_sum * y * (1.0 - y);
+
+                    double *values_ = layer == 0 ? (training_data->_images + image_index) : model->values[layer - 1];
+                    double *weights = get_neuron_weights(model, layer, neuron);
+                    for (size_t w_index = 0; w_index < model->weights_cnt[layer]; w_index++) {
+                        weights[w_index] += training_parameters.lr * error * values_[w_index];
+                    }
+
+                    weights[model->weights_cnt[layer]] += training_parameters.lr * error;
+                    model->errors[layer][neuron] = error;
+                }
+            }
         }
 
-        report_trained();
+        if (global_error/training_data->meta.size < training_parameters.tolerance) {
+            break;
+        }
     }
-
-    return NULL;
-}
-
-static void _print_training_status(Perceptron *ps) {
-    // +---------------------+
-    // | Training Status     |
-    // +----+-------+--------+
-    // |  N | iters |  error |
-    // +----+-------+--------+
-    // |  0 |     1 | 0.0148 |
-    // |  1 |     1 | 0.0139 |
-    // |  2 |     1 | 0.0291 |
-    // |  3 |     1 | 0.0348 |
-    // |  4 |     1 | 0.0263 |
-    // |  5 |     1 | 0.0396 |
-    // |  6 |     1 | 0.0202 |
-    // |  7 |     1 | 0.0230 |
-    // |  8 |     1 | 0.0571 |
-    // |  9 |     1 | 0.0492 |
-    // +----+-------+--------+
-
-
-    printf("+---------------------+\n");
-    printf("| Training Status     |\n");
-    printf("+----+-------+--------+\n");
-    printf("|  N | iters |  error |\n");
-    printf("+----+-------+--------+\n");
-    for (int i = 0; i < 10; i++) {
-        printf("\x1b[2K");
-        // TODO: better formatting when it passes 100k
-        printf("| %2d | %5d | %.4f |\n", ps[i].label, ps[i].it, ps[i].stop_cond);
-    }
-    printf("+----+-------+--------+\n");
 }
 
 void print_parameters() {
@@ -307,21 +300,6 @@ void print_parameters() {
     printf("| Max Iters  |   %04d |\n", training_parameters.max_iters);
     printf("| N Threads  |     %2d |\n", training_parameters.threads);
     printf("+------------+--------+\n");
-}
-
-void print_training_status(Perceptron *ps) {
-    static const int line_cnt = 25;
-    printf("\x1b[2J\x1b[H");
-    _print_training_status(ps);
-    print_parameters();
-    printf("\x1b[%dA", line_cnt);
-    while (!all_trained()) {
-        printf("\x1b[%dA", line_cnt - 9);
-        _print_training_status(ps);
-    }
-
-    print_parameters();
-    printf("\n");
 }
 
 void print_results(int total, int correct) {
@@ -348,39 +326,75 @@ void print_results(int total, int correct) {
     printf("+------------------------+---------+\n");
 }
 
-static const char magic[] = "PiPi";
-bool dump_perceptrons(char *out, Perceptron *ps) {
+void allocate_model(RNA_Model *model) {
+    uint32_t layer_cnt = model->layer_count;
+    model->values = malloc(sizeof(*model->values) * layer_cnt);
+    assert(model->values != NULL);
+
+    model->errors = malloc(sizeof(*model->errors) * layer_cnt);
+    assert(model->errors != NULL);
+
+    model->weights = malloc(sizeof(model->weights) * layer_cnt);
+    assert(model->weights != NULL);
+
+    model->weights_cnt = malloc(sizeof(*model->weights_cnt) * layer_cnt);
+    assert(model->weights_cnt != NULL);
+
+    if (model->neuron_cnt == NULL) {
+        model->neuron_cnt = malloc(sizeof(*model->neuron_cnt) * layer_cnt);
+        assert(model->neuron_cnt != NULL);
+    }
+}
+
+static const char magic[] = "JRNA";
+bool dump_model(char *out, RNA_Model *model) {
     FILE *f = fopen(out, "wb");
+    bool ok = false;
     if (f == NULL) {
         fprintf(stderr, "ERROR: cannot open file %s\n", out);
         goto ERROR;
     }
 
     if (fwrite(magic, 1, ARR_SIZE(magic) - 1, f) == 0) {
-        fprintf(stderr, "ERROR: could not write to file %s\n", out);
+        LOG_WRITE_ERROR(out);
         goto ERROR;
     }
 
-    for (size_t i = 0; i < 10; i++) {
-        if (fwrite(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
-            fprintf(stderr, "ERROR: could not write to file %s\n", out);
+    if (fwrite(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
+        LOG_WRITE_ERROR(out);
+        goto ERROR;
+    }
+
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        uint32_t neurons_cnt = model->neuron_cnt[layer];
+        uint32_t weights_cnt = model->weights_cnt[layer];
+        uint32_t total_weights = neurons_cnt*(weights_cnt + 1); // + 1 bias
+
+        if (fwrite(&neurons_cnt, sizeof(neurons_cnt), 1, f) == 0) {
+            LOG_WRITE_ERROR(out);
             goto ERROR;
         }
 
-        if (fwrite(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
-            fprintf(stderr, "ERROR: could not write to file %s\n", out);
+        if (fwrite(&weights_cnt, sizeof(weights_cnt), 1, f) == 0) {
+            LOG_WRITE_ERROR(out);
+            goto ERROR;
+        }
+
+        if (fwrite(model->weights[layer], sizeof(double), total_weights, f) != total_weights) {
+            LOG_WRITE_ERROR(out);
             goto ERROR;
         }
     }
 
-    return true;
+    ok = true;
 ERROR:
     if(f) fclose(f);
-    return false;
+    return ok;
 }
 
-bool load_perceptrons(char *in, Perceptron *ps) {
+bool load_model(char *in, RNA_Model *model) {
     FILE *f = fopen(in, "rb");
+    bool status = false;
     if (f == NULL) {
         fprintf(stderr, "ERROR: cannot open file %s\n", in);
         goto ERROR;
@@ -388,58 +402,53 @@ bool load_perceptrons(char *in, Perceptron *ps) {
 
     static unsigned char magic_buffer[4];
     if (fread(&magic_buffer, sizeof(magic_buffer), 1, f) == 0) {
-        fprintf(stderr, "ERROR: cannot read file %s\n", in);
+        LOG_READ_ERROR("magic value", in);
         goto ERROR;
     }
 
-    assert(memcmp(magic, magic_buffer, 4) == 0 && "not a perceptron file");
-    for (size_t i = 0; i < 10; i++) {
-        ps[i].wcount = 28*28;
-        ps[i].ws = malloc((ps[i].wcount + 1) * sizeof(*ps[i].ws));
-        ps[i].ws[ps[i].wcount] = 0;
-        ps[i].stop_cond = 1;
+    if (memcmp(magic, magic_buffer, 4) != 0) {
+        fprintf(stderr, "ERROR: first 4 bytes of file %s dont match magic constant %*s\n", in, 4, magic);
+        goto ERROR;
+    }
 
-        if (fread(&ps[i].label, sizeof(ps[i].label), 1, f) == 0) {
-            fprintf(stderr, "ERROR: could not read label in file %s\n", in);
+    if (fread(&model->layer_count, sizeof(model->layer_count), 1, f) == 0) {
+        LOG_READ_ERROR("layer_count", in);
+        goto ERROR;
+    }
+
+    // pre allocate a bunch of fields
+    allocate_model(model);
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        if (fread(&model->neuron_cnt[layer], sizeof(model->neuron_cnt[layer]), 1, f) == 0) {
+            LOG_READ_ERROR("neuron count", in);
             goto ERROR;
         }
 
-        if (fread(ps[i].ws, sizeof(*ps[i].ws), ps[i].wcount + 1, f) == 0) {
-            fprintf(stderr, "ERROR: could not read label in file %s\n", in);
+        if (fread(&model->weights_cnt[layer], sizeof(model->weights_cnt[layer]), 1, f) == 0) {
+            LOG_READ_ERROR("weights count", in);
+            goto ERROR;
+        }
+
+        model->values[layer] = malloc(sizeof(*model->values[layer]) * model->neuron_cnt[layer]);
+        assert(model->values[layer] != NULL);
+
+        model->errors[layer] = malloc(sizeof(*model->errors[layer]) * model->neuron_cnt[layer]);
+        assert(model->errors[layer] != NULL);
+
+        // + 1 for bias
+        uint32_t total_weights = (model->weights_cnt[layer] + 1) * model->neuron_cnt[layer];
+        model->weights[layer] = malloc(sizeof(double)*total_weights);
+        assert(model->weights[layer] != NULL);
+        if (fread(model->weights[layer], sizeof(double), total_weights, f) != total_weights) {
+            LOG_READ_ERROR("weights", in);
             goto ERROR;
         }
     }
 
-    fclose(f);
-    return true;
-
+    status = true;
 ERROR:
     if(f) fclose(f);
-    for (size_t i = 0; i < 10; i++) {
-        if (ps[i].ws) free(ps[i].ws);
-    }
-    return false;
-}
-
-bool test_model(Perceptron *ps) {
-    Data testing_data = {0};
-    if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
-        return false;
-    }
-
-    int correct_guesses = 0;
-    for (uint32_t i = 0; i < testing_data.meta.size; i++) {
-        double *image = testing_data._images + (i * testing_data.meta.cols * testing_data.meta.rows);
-        uint8_t label = find_label(image, ps);
-        if (label == testing_data.labels[i]) correct_guesses++;
-#ifdef PRINT_ASCII_IMAGES
-        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
-        print_image(image);
-#endif
-    }
-
-    print_results(testing_data.meta.size, correct_guesses);
-    return true;
+    return status;
 }
 
 char *concat_path(char *dir, char *file) {
@@ -454,7 +463,61 @@ char *concat_path(char *dir, char *file) {
     return buffer;
 }
 
+double rand_w(float min, float max) {
+    return min + (float)rand()/(float)RAND_MAX*(max-min);
+}
+
+// Make sure to the the `neuron_cnt` in the model before initialization
+void init_model(RNA_Model *model, Data *data) {
+    allocate_model(model);
+
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        model->values[layer] = malloc(sizeof(*model->values[layer]) * model->neuron_cnt[layer]);
+        assert(model->values[layer] != NULL);
+
+        model->errors[layer] = malloc(sizeof(*model->errors[layer]) * model->neuron_cnt[layer]);
+        assert(model->errors[layer] != NULL);
+
+        if (layer == 0) {
+            model->weights_cnt[layer] = data->meta.cols*data->meta.rows;
+        } else {
+            model->weights_cnt[layer] = model->neuron_cnt[layer - 1];
+        }
+
+        // + 1 for bias
+        size_t total_weights = (model->weights_cnt[layer] + 1) * model->neuron_cnt[layer];
+        model->weights[layer] = malloc(sizeof(double)*total_weights);
+        for (size_t w = 0; w < total_weights; w++) {
+            model->weights[layer][w] = rand_w(-0.5, 0.5);
+        }
+    }
+}
+
+bool test_model(RNA_Model *model) {
+    Data testing_data = {0};
+    if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
+        return false;
+    }
+
+    int correct_guesses = 0;
+    for (uint32_t i = 0; i < testing_data.meta.size; i++) {
+        double *image = testing_data._images + (i * testing_data.meta.cols * testing_data.meta.rows);
+        uint8_t label = find_label(model, image);
+        if (label == testing_data.labels[i]) correct_guesses++;
+#ifdef PRINT_ASCII_IMAGES
+        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
+        print_image(image, testing_data.meta.cols);
+#endif
+    }
+
+    print_results(testing_data.meta.size, correct_guesses);
+    return true;
+}
+
 bool init_training() {
+
+    srand(time(NULL)); // ATENTION: Make sure to use 1 seed per thread
+
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
     static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
     Data data = {0};
@@ -462,45 +525,13 @@ bool init_training() {
         return false;
     }
 
-    Perceptron ps[10] = { 0 };
-    uint32_t wcount = data.meta.rows * data.meta.cols;
-    for (size_t i = 0; i < 10; i++) {
-        ps[i].wcount = wcount;
-        ps[i].ws = calloc(wcount + 1, sizeof(*ps[i].ws));
-        ps[i].label = i;
-        ps[i].stop_cond = 1;
-        ps[i].ws[wcount] = 0;
-    }
-
-    static pthread_mutex_t perceptron_mut = PTHREAD_MUTEX_INITIALIZER;
-    pthread_t threads[training_parameters.threads];
-
-    Thread_Data td = {
-        .data = &data,
-        .ps = ps,
-        .mut = &perceptron_mut
-    };
-
+    RNA_Model model = { .neuron_cnt = (uint32_t [3]) {64, 32, 10}, .layer_count = 3 };
+    print_parameters();
 
     struct timespec start, end;
     assert(clock_gettime(CLOCK_MONOTONIC, &start) >= 0);
-    for (int i = 0; i < training_parameters.threads; i++) {
-        pthread_create(&threads[i], NULL, train_perceptron, (void*)&td);
-    }
-
-    if (training_parameters.verbose) {
-        print_training_status(ps);
-    }
-
-    for (int i = 0; i < training_parameters.threads; i++) {
-        pthread_join(threads[i], NULL);
-    }
-
-    if (!training_parameters.verbose) {
-        _print_training_status(ps);
-        print_parameters();
-    }
-
+    init_model(&model, &data);
+    train_model(&model, &data);
     assert(clock_gettime(CLOCK_MONOTONIC, &end) >= 0);
 
     float start_sec = start.tv_sec + start.tv_nsec/10e9;
@@ -508,7 +539,7 @@ bool init_training() {
     float diff_in_secs = end_sec - start_sec;
     printf("Total training time: %.3f secs\n", diff_in_secs);
 
-    if (!test_model(ps)) {
+    if (!test_model(&model)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
@@ -516,12 +547,12 @@ bool init_training() {
     if (training_parameters.output_path == NULL) {
         static char buffer[256];
         sprintf(buffer, "lr_%.4f-tl_%.4f-itrs_%d.model", training_parameters.lr, training_parameters.tolerance, training_parameters.max_iters);
-        if (!dump_perceptrons(concat_path(training_parameters.output_dir_path, buffer), ps)) {
+        if (!dump_model(concat_path(training_parameters.output_dir_path, buffer), &model)) {
             fprintf(stderr, "ERROR: failed to save model\n");
             return false;
         }
     } else {
-        if (!dump_perceptrons(concat_path(training_parameters.output_dir_path, training_parameters.output_path), ps)) {
+        if (!dump_model(concat_path(training_parameters.output_dir_path, training_parameters.output_path), &model)) {
             fprintf(stderr, "ERROR: failed to save model\n");
             return false;
         }
@@ -531,12 +562,12 @@ bool init_training() {
 }
 
 bool load_model_and_test(char *model_path) {
-    Perceptron ps[10] = {0};
-    if (!load_perceptrons(model_path, ps)) {
+    RNA_Model model = {0};
+    if (!load_model(model_path, &model)) {
         return false;
     }
 
-    if (!test_model(ps)) {
+    if (!test_model(&model)) {
         fprintf(stderr, "ERROR: failed to test model\n");
         return false;
     }
@@ -626,8 +657,8 @@ void draw_card(int i, int current_image, int total_cards, float xoffset_cards, d
 }
 
 bool load_model_and_init_gui(char *model_path) {
-    Perceptron ps[10] = {0};
-    if (!load_perceptrons(model_path, ps)) {
+    RNA_Model model = {0};
+    if (!load_model(model_path, &model)) {
         return false;
     }
 
@@ -656,7 +687,7 @@ bool load_model_and_init_gui(char *model_path) {
         card_textures[i] = LoadTextureFromImage(GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK));
     }
 
-    int8_t guess = find_label(testing_data._images, ps);
+    int8_t guess = find_label(&model, testing_data._images);
     UpdateTexture(texture, make_screen_pixels(testing_data._images));
     size_t image_index = 0;
     bool drawining_mode = false;
@@ -676,7 +707,7 @@ bool load_model_and_init_gui(char *model_path) {
                 UpdateTexture(window_texture, pixels);
             } else if (IsKeyPressed(KEY_SPACE))  {
                 double *image = make_image();
-                label = find_label(image, ps);
+                label = find_label(&model, image);
             } else if (IsKeyPressed(KEY_R)) {
                 for (size_t y = 0; y < WINDOW_SIZE; y++) {
                     for (size_t x = 0; x < WINDOW_SIZE; x++) {
@@ -714,12 +745,12 @@ bool load_model_and_init_gui(char *model_path) {
             if (IsKeyPressed(KEY_RIGHT) && current_image < testing_data.meta.size) {
                 current_image++;
                 image_index = current_image*IMAGE_SIZE*IMAGE_SIZE;
-                guess = find_label(testing_data._images + image_index, ps);
+                guess = find_label(&model, testing_data._images + image_index);
                 UpdateTexture(texture, make_screen_pixels(testing_data._images + image_index));
             } else if (IsKeyPressed(KEY_LEFT) && current_image > 0) {
                 current_image--;
                 image_index = current_image*IMAGE_SIZE*IMAGE_SIZE;
-                guess = find_label(testing_data._images + image_index, ps);
+                guess = find_label(&model, testing_data._images + image_index);
                 UpdateTexture(texture, make_screen_pixels(testing_data._images + image_index));
             }
 
