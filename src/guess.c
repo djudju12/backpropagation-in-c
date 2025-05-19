@@ -18,102 +18,6 @@
 
 static Color pixels[WINDOW_SIZE][WINDOW_SIZE];
 
-void print_parameters(RNA_Parameters parameters) {
-    printf("\n+---------------------+\n");
-    printf("| Training Parameters |\n");
-    printf("+------------+--------+\n");
-    printf("| Tolerance  | %.4f |\n", parameters.tolerance);
-    printf("| LR         | %.4f |\n", parameters.lr);
-    printf("| Max Iters  |   %04d |\n", parameters.max_iters);
-    printf("| N Threads  |     %2d |\n", parameters.threads);
-    printf("+------------+--------+\n");
-}
-
-void print_results(int total, int correct) {
-    int incorrect_guesses = total - correct;
-    float acc = (correct/(double)total)*100;
-    float err = (incorrect_guesses/(double)total)*100;
-
-    printf("+----------------------------------+\n");
-    printf("| Model Statistics                 |\n");
-    printf("+------------------------+---------+\n");
-    printf("| Correct Predicitions   |  %04d   |\n", correct);
-    printf("| Incorrect Predicitions |  %04d   |\n", incorrect_guesses);
-    printf("| Accuracy               |  %05.2f%% |\n", acc);
-    printf("| Error                  |  %05.2f%% |\n", err);
-    printf("+------------------------+---------+\n");
-}
-
-void print_image(double *image) {
-    static char alphabet[] = { '.', ':', '-', '=', '+', '*', '#', '%', '@' };
-
-    for (size_t y = 0; y < IMAGE_SIZE; y++) {
-        for (size_t x = 0; x < IMAGE_SIZE; x++) {
-            uint8_t v = image[IMAGE_SIZE*y + x] * 255.0;
-            printf("%c", alphabet[(v * ARR_SIZE(alphabet)) / 256]);
-        }
-
-        printf("\n");
-    }
-}
-
-bool test_model(RNA_Model *model) {
-    Data testing_data = {0};
-    if (!read_data("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &testing_data)) {
-        return false;
-    }
-
-    int correct_guesses = 0;
-    for (uint32_t i = 0; i < testing_data.meta.size; i++) {
-        double *image = testing_data._images + (i * testing_data.meta.cols * testing_data.meta.rows);
-        uint8_t label = find_label(model, image);
-        if (label == testing_data.labels[i]) correct_guesses++;
-#ifdef PRINT_ASCII_IMAGES
-        printf("Guessed: %d Actual: %d\n", label, testing_data.labels[i]);
-        print_image(image, testing_data.meta.cols);
-#endif
-    }
-
-    print_results(testing_data.meta.size, correct_guesses);
-    return true;
-}
-
-bool init_training(RNA_Parameters *training_parameters) {
-    static const char *images_file_path = "./data/train-images.idx3-ubyte";
-    static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
-
-    Data data = {0};
-    if (!read_data(images_file_path, labels_file_path, &data)) {
-        return false;
-    }
-
-    RNA_Model model = { .neuron_cnt = (uint32_t [3]) {64, 32, 10}, .layer_count = 3, .training_parameters = training_parameters };
-    print_parameters(*model.training_parameters);
-
-    init_model(&model, &data);
-    train_model(&model, &data);
-    if (!test_model(&model)) {
-        fprintf(stderr, "ERROR: failed to test model\n");
-        return false;
-    }
-
-    return save_model(&model);
-}
-
-bool load_model_and_test(char *model_path) {
-    RNA_Model model = {0};
-    if (!load_model(model_path, &model)) {
-        return false;
-    }
-
-    if (!test_model(&model)) {
-        fprintf(stderr, "ERROR: failed to test model\n");
-        return false;
-    }
-
-    return true;
-}
-
 void mark_mouse_pos(Color color) {
     Vector2 pos = GetMousePosition();
     int px = (int) (pos.x - MARK_SIZE/2);
@@ -350,29 +254,17 @@ char* shift(int *argc, char ***argv) {
 }
 
 void usage(char *program_name) {
-    RNA_Parameters default_parameters = get_default_parameters();
     printf(
 "Usage:\n"
-"  %s --train [--out <output-file>] [--max-iters <n>] [--tolerance <value>] [--lr <rate>] [--threads <n>]\n"
 "  %s --gui --model <model-file>\n"
-"  %s --test --model <model-file>\n"
 "  %s --help\n",
-    program_name, program_name, program_name, program_name);
+    program_name, program_name);
 
     printf(
 "\nOptions:\n"
 "  --help               Prints this message.\n"
-"  --train              Train a new model.\n"
 "  --gui                Launch the graphical interface.\n"
-"  --test               Run test data on the model.\n"
-"  --model <file>       Input model file (required for GUI).\n"
-"  --out <file>         Output file for the trained model.\n"
-"  --out-dir <file>     Output directory for the trained model.\n"
-"  --max-iters <n>      Maximum number of iterations [default: %d].\n"
-"  --tolerance <value>  Sets the minimum error required to stop training early [default: %.3f].\n"
-"  --lr <rate>          Learning rate [default: %.3f].\n"
-"  --threads <n>        Number of parallel threads [default: %d].\n",
-    default_parameters.max_iters, default_parameters.tolerance, default_parameters.lr, 4);;
+"  --model <file>       Input model file (required for GUI).\n");
 }
 
 int main(int argc, char **argv) {
@@ -383,49 +275,7 @@ int main(int argc, char **argv) {
     }
 
     char *mode = shift(&argc, &argv);
-    if (strcmp(mode, "--train") == 0) {
-        RNA_Parameters training_parameters = get_default_parameters();
-        training_parameters.threads = sysconf(_SC_NPROCESSORS_ONLN);
-        while (argc > 0) {
-            char *parameter = shift(&argc, &argv);
-            if (strcmp(parameter, "--verbose") == 0) {
-                // training_parameters.verbose = true;
-            } else {
-                if (argc == 0) {
-                    fprintf(stderr, "ERROR: missing parameter '%s' value\n", parameter);
-                    usage(program_name);
-                    return 1;
-                }
-
-                char *value = shift(&argc, &argv);
-                if (strcmp(parameter, "--max-iters") == 0) {
-                    training_parameters.max_iters = atoi(value);
-                } else if (strcmp(parameter, "--tolerance") == 0) {
-                    training_parameters.tolerance = atof(value);
-                } else if (strcmp(parameter, "--lr") == 0) {
-                    training_parameters.lr = atof(value);
-                } else if (strcmp(parameter, "--threads") == 0) {
-                    training_parameters.threads = atoi(value);
-                } else if (strcmp(parameter, "--out") == 0) {
-                    training_parameters.output_path = value;
-                } else if (strcmp(parameter, "--out-dir") == 0) {
-                    training_parameters.output_dir_path = value;
-                }
-            }
-
-        }
-
-        if (!init_training(&training_parameters)) {
-            return 1;
-        }
-
-    } else if (strcmp(mode, "--gui") == 0) {
-        if (argc == 0 || strcmp(shift(&argc, &argv), "--model") != 0) {
-            fprintf(stderr, "ERROR: missing parameter '--model'\n");
-            usage(program_name);
-            return 1;
-        }
-
+    if (strcmp(mode, "--model") == 0) {
         if (argc == 0) {
             fprintf(stderr, "ERROR: missing parameter '--model' value\n");
             usage(program_name);
@@ -434,29 +284,13 @@ int main(int argc, char **argv) {
 
         char *model_path = shift(&argc, &argv);
         if (!load_model_and_init_test_gui(model_path)) {
-            return 1;
-        }
-    } else if (strcmp(mode, "--test") == 0) {
-        if (argc == 0 || strcmp(shift(&argc, &argv), "--model") != 0) {
-            fprintf(stderr, "ERROR: missing parameter '--model'\n");
-            usage(program_name);
-            return 1;
-        }
-
-        if (argc == 0) {
-            fprintf(stderr, "ERROR: missing parameter '--model' value\n");
-            usage(program_name);
-            return 1;
-        }
-
-        char *model_path = shift(&argc, &argv);
-        if (!load_model_and_test(model_path)) {
+            fprintf(stderr, "ERROR: could not initialize GUI");
             return 1;
         }
     } else if (strcmp(mode, "--help") == 0) {
         usage(program_name);
     } else {
-        printf("ERROR: invalid mode %s\n", mode);
+        printf("ERROR: invalid parameter %s\n", mode);
         usage(program_name);
         return 1;
     }

@@ -1,10 +1,18 @@
 OUT_DIR=bin
 
-$(OUT_DIR)/rna: $(OUT_DIR) $(OUT_DIR)/training.o src/main.c
-	gcc -o $@ src/main.c -Wall -Wextra -ggdb -lraylib -lm $(OUT_DIR)/training.o -pg
+CFLAGS=-Wall -Wextra -ggdb
+LDFLAGS=-lraylib -lm
+
+all: $(OUT_DIR)/guess $(OUT_DIR)/training
+
+$(OUT_DIR)/guess: $(OUT_DIR) $(OUT_DIR)/training.o src/guess.c
+	gcc src/guess.c $(CFLAGS) $(LDFLAGS) $(OUT_DIR)/training.o -o $@
+
+$(OUT_DIR)/training: $(OUT_DIR) $(OUT_DIR)/training.o src/ui_training.c
+	gcc src/ui_training.c $(CFLAGS) $(LDFLAGS) $(OUT_DIR)/training.o -o $@
 
 $(OUT_DIR)/training.o: src/training.c
-	gcc -O2 -c -o $@ src/training.c -Wall -Wextra -ggdb -ftree-vectorize -march=native -pg
+	gcc -O2 -c src/training.c $(CFLAGS) -ftree-vectorize -march=native -o $@
 
 $(OUT_DIR):
 	mkdir -p $(OUT_DIR)

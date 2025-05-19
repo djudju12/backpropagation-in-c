@@ -6,8 +6,10 @@
 #include <string.h>
 #include <time.h>
 
+#include <pthread.h>
+
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define ERROR_VALIDATION_STEP 10000 // check error sum each ERROR_VALIDATION_STEP iterations
+#define ERROR_VALIDATION_STEP 2500 // check error sum each ERROR_VALIDATION_STEP iterations
 #define LOG_WRITE_ERROR(file) fprintf(stderr, "ERROR: could not write to file %s\n", file)
 #define LOG_READ_ERROR(msg, file) fprintf(stderr, "ERROR: could not read %s from file %s\n", msg, file)
 #define internal static
@@ -163,6 +165,7 @@ int find_label(RNA_Model *model, double *image) {
 internal void _train_model(RNA_Model *model, Data *training_data) {
     const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
     const double lr = model->training_parameters->lr;
+    model->training = true;
 
     double global_error = 0;
     for (int it = 0; it < model->training_parameters->max_iters; it++) {
@@ -230,12 +233,39 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
             int input_it = training_data->meta.size*it + (i + 1);
             if (input_it % ERROR_VALIDATION_STEP == 0) {
                 global_error /= ERROR_VALIDATION_STEP;
-                printf("Iteration: %d Error: %f\n", input_it, global_error);
-                if (global_error < model->training_parameters->tolerance) return;
+                DA_APPEND(model->error_hist, ((Error) { .iteration = input_it, .value = global_error }));
+                if (global_error < model->training_parameters->tolerance) {
+                    goto CLEAN_UP;
+                }
                 global_error = 0.;
             }
         }
     }
+
+CLEAN_UP:
+    model->training = false;
+}
+
+typedef struct {
+    RNA_Model *model;
+    Data *training_data;
+} Thread_Args;
+
+internal void* _train_model_async(void *args) {
+    Thread_Args *td = (Thread_Args *) args;
+    train_model(td->model, td->training_data);
+    save_model(td->model);
+    return NULL;
+}
+
+void train_model_async(RNA_Model *model, Data *training_data) {
+    static pthread_t handle;
+    static Thread_Args args;
+    args.model = model;
+    args.training_data = training_data;
+    model->training = true;
+    pthread_create(&handle, NULL, _train_model_async, (void *)&args);
+    pthread_detach(handle);
 }
 
 void train_model(RNA_Model *model, Data *training_data) {
@@ -396,11 +426,13 @@ bool save_model(RNA_Model *model) {
         }
     }
 
-    if (!dump_model(concat_path(model->training_parameters->output_dir_path, model->training_parameters->output_path), model)) {
+    char *path = concat_path(model->training_parameters->output_dir_path, model->training_parameters->output_path);
+    if (!dump_model(path, model)) {
         fprintf(stderr, "ERROR: failed to save model\n");
         return false;
     }
 
+    printf("INFO: saved model to file %s\n", path);
     return true;
 }
 

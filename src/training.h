@@ -1,6 +1,30 @@
-// #define __USE_POSIX199309
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+#define DA_APPEND(da, v) do {                                      \
+    if ((da).capacity == 0 || (da).items == NULL) {                \
+        (da).capacity = 32;                                        \
+        (da).items = malloc((da).capacity*sizeof(v));              \
+        assert((da).items != NULL);                                \
+    } else if ((da).count >= (da).capacity) {                      \
+        (da).capacity *= 2;                                        \
+        (da).items = realloc((da).items, (da).capacity*sizeof(v)); \
+        assert((da).items != NULL);                                \
+    }                                                              \
+    (da).items[(da).count++] = v;                                  \
+} while (0)
+
+typedef struct {
+    size_t iteration;
+    double value;
+} Error;
+
+typedef struct {
+    Error *items;
+    size_t count;
+    size_t capacity;
+} Error_Hist;
 
 typedef struct {
     double tolerance;
@@ -8,7 +32,6 @@ typedef struct {
     int max_iters;
     char *output_path;
     char *output_dir_path;
-    int threads;
     // bool verbose;
 } RNA_Parameters;
 
@@ -22,6 +45,8 @@ typedef struct {
     double **errors;          // layer -> neuron -> error
     double **values;          // layer -> neuron -> values
     RNA_Parameters *training_parameters;
+    bool training;
+    Error_Hist error_hist;
 } RNA_Model;
 
 typedef struct {
@@ -39,6 +64,7 @@ bool load_model(char *in, RNA_Model *model); // Load model from file
 bool save_model(RNA_Model *model); // Saves model to a file
 void init_model(RNA_Model *model, Data *data); // Initilize model (allocation and stuff)
 void train_model(RNA_Model *model, Data *training_data); // Train model using the training data (./data/train-*.ubyte)
+void train_model_async(RNA_Model *model, Data *training_data);
 bool test_model(RNA_Model *model); // Test model using the testing data (./data/tk10k-*.ubyte)
 int find_label(RNA_Model *model, double *image); // Find label (0..9) of given image
 RNA_Parameters get_default_parameters(void); // Get parameters used in `init_model` when model.training_parameters == NULL
