@@ -107,14 +107,27 @@ internal double sigmoid(double sum) {
     return .5 * (sum / (1 + fabs(sum)) + 1);
 }
 
-internal double sum_weights(double *weights, double *values, size_t cnt) {
+internal double dot_product(double *a, double *b, size_t cnt) {
     double sum = 0;
-    for (uint32_t i = 0; i < cnt; i++) {
-        sum += weights[i] * values[i];
+
+    for (size_t i = 0; i + 3 < cnt; i += 4) {
+        sum += a[i]   * b[i]
+             + a[i+1] * b[i+1]
+             + a[i+2] * b[i+2]
+             + a[i+3] * b[i+3];
     }
 
-    sum += weights[cnt]; // bias
+    size_t remaning = cnt % 4;
+    for (size_t i = 0; i < remaning; i++) {
+        sum += a[cnt - 1 - i] * b[cnt - 1 - i];
+    }
 
+    return sum;
+}
+
+internal double sum_weights(double *weights, double *values, size_t cnt) {
+    double sum = dot_product(weights, values, cnt);
+    sum += weights[cnt]; // bias
     return sum;
 }
 
@@ -159,15 +172,8 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
 
             double *values = training_data->_images + image_index;
             for (size_t layer = 0; layer < model->layer_count; layer++) {
-
                 for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
-
-                    double sum = sum_weights(
-                        get_neuron_weights(model, layer, neuron),
-                        values,
-                        model->weights_cnt[layer]
-                    );
-
+                    double sum = sum_weights(get_neuron_weights(model, layer, neuron), values, model->weights_cnt[layer]);
                     model->values[layer][neuron] = sigmoid(sum);
                 }
 
@@ -194,7 +200,8 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
             global_error += local_error*0.5;
 
             for (int layer = out_layer - 1; layer >= 0; layer--) {
-                for (size_t neuron = 0; neuron < model->neuron_cnt[layer]; neuron++) {
+                uint32_t neuron_cnt = model->neuron_cnt[layer];
+                for (size_t neuron = 0; neuron < neuron_cnt; neuron++) {
                     double error_sum = 0.0;
 
                     for (size_t next_neuron = 0; next_neuron < model->neuron_cnt[layer + 1]; next_neuron++) {
@@ -206,13 +213,15 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
                     double y = model->values[layer][neuron];
                     double error = error_sum * y * (1.0 - y);
 
+                    uint32_t w_count = model->weights_cnt[layer];
                     double *values_ = layer == 0 ? (training_data->_images + image_index) : model->values[layer - 1];
                     double *weights = get_neuron_weights(model, layer, neuron);
-                    for (size_t w_index = 0; w_index < model->weights_cnt[layer]; w_index++) {
-                        weights[w_index] += lr * error * values_[w_index];
+                    double scale = lr * error;
+                    for (size_t w_index = 0; w_index < w_count; w_index++) {
+                        weights[w_index] += scale * values_[w_index];
                     }
 
-                    weights[model->weights_cnt[layer]] += lr * error;
+                    weights[w_count] += scale;
                     model->errors[layer][neuron] = error;
                 }
             }
