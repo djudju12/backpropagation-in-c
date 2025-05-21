@@ -11,7 +11,7 @@
 #include "training.h"
 
 #define SCREEN_WIDTH 510
-#define SCREEN_HEIGHT 350
+#define SCREEN_HEIGHT 480
 #define CHART_STEP_CNT 5
 #define CHART_STEP_LEN 8
 #define CHART_STEP_PAD 3
@@ -39,6 +39,24 @@ Vector2 scale_vector(Chart chart, Vector2 dp_pos) {
     };
 }
 
+void draw_float(int x, int y, char *label, double f) {
+    static char buffer[128];
+    sprintf(buffer, "%s: %.4f", label, f);
+    DrawTextEx(font, buffer, (Vector2) {x, y}, CHART_FONT_SIZE, 1, BLACK);
+}
+
+void draw_int(int x, int y, char *label, long i) {
+    static char buffer[128];
+    sprintf(buffer, "%s: %ld", label, i);
+    DrawTextEx(font, buffer, (Vector2) {x, y}, CHART_FONT_SIZE, 1, BLACK);
+}
+
+void draw_boolean(int x, int y, char *label, bool b) {
+    static char buffer[128];
+    sprintf(buffer, "%s: %s", label, b ? "True" : "False");
+    DrawTextEx(font, buffer, (Vector2) {x, y}, CHART_FONT_SIZE, 1, BLACK);
+}
+
 void chart_draw(int x, int y, Chart chart) {
     static char label_buffer[64];
     Vector2 origin = { .x = x, .y = y + chart.height };
@@ -61,7 +79,6 @@ void chart_draw(int x, int y, Chart chart) {
         .x = x, .y = y
     };
 
-    DrawRectangleLinesEx(chart_border, CHART_LINE_THICKNESS, BLACK);
     for (int y = 0; y <= CHART_STEP_CNT; y++) {
         Vector2 pos = (Vector2) {
             .x = 0,
@@ -104,6 +121,8 @@ void chart_draw(int x, int y, Chart chart) {
         scaled_pos.y += text_size.y/2.0 + CHART_STEP_PAD;
         DrawTextEx(font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
     }
+
+    DrawRectangleLinesEx(chart_border, CHART_LINE_THICKNESS, BLACK);
 }
 
 void chart_add_dp(Chart *chart, Vector2 dp) {
@@ -185,6 +204,7 @@ void usage(char *program_name) {
     default_parameters.max_iters, default_parameters.tolerance, default_parameters.lr);
 }
 
+#define X_ALIGN_DISTANCE 200
 bool init_training(RNA_Parameters *training_parameters) {
     srand(time(NULL));
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
@@ -203,23 +223,21 @@ bool init_training(RNA_Parameters *training_parameters) {
     SetTraceLogLevel(LOG_ERROR);
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Training");
 
-    Chart chart = {0};
     font = LoadFont_CourierPrimeRegular();
+    SetTextureFilter(font.texture, TEXTURE_FILTER_TRILINEAR);
+
+    Chart chart = {0};
     chart.width = 350;
     chart.height = 250;
     chart.max_y = 1.0;
 
+    int padding_x = SCREEN_WIDTH/2 - chart.width/2;
+    int padding_y = 30;
     while (!WindowShouldClose()) {
         size_t new_data_count = model.error_hist.count - chart.points.count;
         for (size_t i = 0; i < new_data_count; i++) {
             Error new = model.error_hist.items[chart.points.count];
             chart_add_dp(&chart, (Vector2) { .x = (double) new.iteration, .y = new.value });
-        }
-
-        BeginDrawing();
-
-        if (model.error_hist.count > 0) {
-            chart_draw(SCREEN_WIDTH/2 - chart.width/2, 30, chart);
         }
 
         if (!model.training && IsKeyPressed(KEY_T) && !test_model(&model)) {
@@ -230,6 +248,22 @@ bool init_training(RNA_Parameters *training_parameters) {
             chart.points.count = 0;
             chart.max_x = 0;
             train_model_async(&model, &data);
+        }
+
+        BeginDrawing();
+
+        if (model.error_hist.count > 0) {
+            Error last_error = model.error_hist.items[model.error_hist.count - 1];
+            chart_draw(padding_x, padding_y, chart);
+
+            draw_boolean(padding_x, padding_y*3 + chart.height, "Training", model.training);
+            draw_int(padding_x + X_ALIGN_DISTANCE, padding_y*3 + chart.height, "Max Iters", model.training_parameters->max_iters);
+            draw_float(padding_x, padding_y*4 + chart.height, "Tolerance", model.training_parameters->tolerance);
+            draw_float(padding_x + X_ALIGN_DISTANCE, padding_y*4 + chart.height, "LR", model.training_parameters->lr);
+
+            draw_int(padding_x, padding_y*5 + chart.height, "Epoch", model.epoch);
+            draw_int(padding_x + X_ALIGN_DISTANCE, padding_y*5 + chart.height, "Iteration", last_error.iteration);
+            draw_float(padding_x, padding_y*6 + chart.height, "Error", last_error.value);
         }
 
         ClearBackground((Color){.r = 220, .g = 220, .b = 220, .a = 255});

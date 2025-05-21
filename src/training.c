@@ -262,7 +262,7 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
 
     double global_error = 0;
     for (int it = 0; it < model->training_parameters->max_iters; it++) {
-        model->epoch = it;
+        model->epoch = it + 1;
         for (size_t i = 0; i < training_data->meta.size; i++) {
             size_t image_index = (i * total_pixels);
             int8_t label = training_data->labels[i];
