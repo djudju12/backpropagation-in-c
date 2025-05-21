@@ -9,6 +9,8 @@
 #include "resources/courier_prime.c"
 #include "training.h"
 
+#define SCREEN_WIDTH 510
+#define SCREEN_HEIGHT 350
 #define CHART_STEP_CNT 5
 #define CHART_STEP_LEN 8
 #define CHART_STEP_PAD 3
@@ -25,8 +27,9 @@ typedef struct {
     double max_y, max_x;
     int width, height;
     Data_Points points;
-    Font font;
 } Chart;
+
+Font font;
 
 Vector2 scale_vector(Chart chart, Vector2 dp_pos) {
     return (Vector2) {
@@ -73,10 +76,10 @@ void chart_draw(int x, int y, Chart chart) {
         );
 
         snprintf(label_buffer, 64, "%.2f", pos.y);
-        Vector2 text_size = MeasureTextEx(chart.font, label_buffer, CHART_FONT_SIZE, 1.0);
+        Vector2 text_size = MeasureTextEx(font, label_buffer, CHART_FONT_SIZE, 1.0);
         scaled_pos.x = origin.x - CHART_STEP_LEN - CHART_STEP_PAD - text_size.x;
         scaled_pos.y -= text_size.y/2.0;
-        DrawTextEx(chart.font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
+        DrawTextEx(font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
     }
 
     for (int x = 0; x <= CHART_STEP_CNT; x++) {
@@ -94,10 +97,10 @@ void chart_draw(int x, int y, Chart chart) {
         );
 
         snprintf(label_buffer, 64, "%d", (int) pos.x);
-        Vector2 text_size = MeasureTextEx(chart.font, label_buffer, CHART_FONT_SIZE, 1.0);
+        Vector2 text_size = MeasureTextEx(font, label_buffer, CHART_FONT_SIZE, 1.0);
         scaled_pos.x -= text_size.x/2.0;
         scaled_pos.y += text_size.y/2.0 + CHART_STEP_PAD;
-        DrawTextEx(chart.font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
+        DrawTextEx(font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
     }
 }
 
@@ -108,7 +111,7 @@ void chart_add_dp(Chart *chart, Vector2 dp) {
 }
 
 void print_parameters(RNA_Parameters parameters) {
-    printf("\n+---------------------+\n");
+    printf("+---------------------+\n");
     printf("| Training Parameters |\n");
     printf("+------------+--------+\n");
     printf("| Tolerance  | %.4f |\n", parameters.tolerance);
@@ -172,7 +175,6 @@ void usage(char *program_name) {
     RNA_Parameters default_parameters = get_default_parameters();
     printf(
 "Usage:\n"
-// "  %s --train [--out <output-file>] [--max-iters <n>] [--tolerance <value>] [--lr <rate>] [--threads <n>]\n"
 "  %s --train [--out <output-file>] [--max-iters <n>] [--tolerance <value>] [--lr <rate>]\n"
 "  %s --test --model <model-file>\n"
 "  %s --help\n",
@@ -207,25 +209,32 @@ bool init_training(RNA_Parameters *training_parameters) {
     init_model(&model, &data);
     train_model_async(&model, &data);
 
-    InitWindow(700, 500, "Training");
+    SetTraceLogLevel(LOG_ERROR);
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Training");
 
     Chart chart = {0};
-    chart.font = LoadFont_CourierPrimeRegular();
-    chart.width = 400;
-    chart.height = 300;
+    font = LoadFont_CourierPrimeRegular();
+    chart.width = 350;
+    chart.height = 250;
     chart.max_y = 1.0;
+
     while (!WindowShouldClose()) {
         size_t new_data_count = model.error_hist.count - chart.points.count;
         for (size_t i = 0; i < new_data_count; i++) {
             Error new = model.error_hist.items[chart.points.count];
+            printf("INFO: iteration: %ld error: %f\n", new.iteration, new.value);
             chart_add_dp(&chart, (Vector2) { .x = (double) new.iteration, .y = new.value });
         }
 
         BeginDrawing();
-        if (chart.points.count > 1) {
-            chart_draw(100, 100, chart);
+
+        chart_draw(SCREEN_WIDTH/2 - chart.width/2, 30, chart);
+
+        if (!model.training && IsKeyPressed(KEY_T) && !test_model(&model)) {
+            printf("ERROR: could not test model\n");
         }
-        ClearBackground(WHITE);
+
+        ClearBackground((Color){.r = 220, .g = 220, .b = 220, .a = 255});
         EndDrawing();
     }
 
@@ -242,42 +251,37 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // training_parameters.threads = sysconf(_SC_NPROCESSORS_ONLN);
     char *parameter = shift(&argc, &argv);
     if (strcmp(parameter, "--train") == 0) {
         RNA_Parameters training_parameters = get_default_parameters();
         while (argc > 0) {
             parameter = shift(&argc, &argv);
-            if (strcmp(parameter, "--verbose") == 0) {
-                // training_parameters.verbose = true;
-            } else {
-                if (argc == 0) {
-                    fprintf(stderr, "ERROR: missing parameter '%s' value\n", parameter);
-                    usage(program_name);
-                    return 1;
-                }
+            if (argc == 0) {
+                fprintf(stderr, "ERROR: missing parameter '%s' value\n", parameter);
+                usage(program_name);
+                return 1;
+            }
 
-                char *value = shift(&argc, &argv);
-                if (strcmp(parameter, "--max-iters") == 0) {
-                    training_parameters.max_iters = atoi(value);
-                } else if (strcmp(parameter, "--tolerance") == 0) {
-                    training_parameters.tolerance = atof(value);
-                } else if (strcmp(parameter, "--lr") == 0) {
-                    training_parameters.lr = atof(value);
-                // } else if (strcmp(parameter, "--threads") == 0) {
-                //     training_parameters.threads = atoi(value);
-                } else if (strcmp(parameter, "--out") == 0) {
-                    training_parameters.output_path = value;
-                } else if (strcmp(parameter, "--out-dir") == 0) {
-                    training_parameters.output_dir_path = value;
-                } else {
-                    fprintf(stderr, "WARNING: ignoring unknow parameter %s\n", parameter);
-                }
+            char *value = shift(&argc, &argv);
+            if (strcmp(parameter, "--max-iters") == 0) {
+                training_parameters.max_iters = atoi(value);
+            } else if (strcmp(parameter, "--tolerance") == 0) {
+                training_parameters.tolerance = atof(value);
+            } else if (strcmp(parameter, "--lr") == 0) {
+                training_parameters.lr = atof(value);
+            } else if (strcmp(parameter, "--out") == 0) {
+                training_parameters.output_path = value;
+            } else if (strcmp(parameter, "--out-dir") == 0) {
+                training_parameters.output_dir_path = value;
+            } else {
+                fprintf(stderr, "WARNING: ignoring unknow parameter %s\n", parameter);
             }
         }
+
         if (!init_training(&training_parameters)) {
             return 1;
         }
+
     } else if (strcmp(parameter, "--test") == 0) {
         if (argc == 0 || strcmp(shift(&argc, &argv), "--model") != 0) {
             fprintf(stderr, "ERROR: missing parameter '--model'\n");

@@ -47,6 +47,7 @@ typedef struct {
     RNA_Parameters *training_parameters;
     bool training;
     Error_Hist error_hist;
+    int epoch;
 } RNA_Model;
 
 typedef struct {

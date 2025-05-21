@@ -166,9 +166,11 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
     const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
     const double lr = model->training_parameters->lr;
     model->training = true;
+    DA_APPEND(model->error_hist, ((Error) { .iteration = 0, .value = 1.0 }));
 
     double global_error = 0;
     for (int it = 0; it < model->training_parameters->max_iters; it++) {
+        model->epoch = it;
         for (size_t i = 0; i < training_data->meta.size; i++) {
             size_t image_index = (i * total_pixels);
             int8_t label = training_data->labels[i];
@@ -279,7 +281,8 @@ void train_model(RNA_Model *model, Data *training_data) {
     float start_sec = start.tv_sec + start.tv_nsec/10e9;
     float end_sec = end.tv_sec + end.tv_nsec/10e9;
     float diff_in_secs = end_sec - start_sec;
-    printf("Total training time: %.3f secs\n", diff_in_secs);
+    printf("INFO: training finished\n");
+    printf("INFO: total training time: %.3f secs\n", diff_in_secs);
 }
 
 internal void allocate_model(RNA_Model *model) {
@@ -417,20 +420,23 @@ ERROR:
 }
 
 bool save_model(RNA_Model *model) {
+    char *path;
     if (model->training_parameters->output_path == NULL) {
         static char buffer[256];
         sprintf(buffer, "lr_%.4f-tl_%.4f-itrs_%d.model", model->training_parameters->lr, model->training_parameters->tolerance, model->training_parameters->max_iters);
-        if (!dump_model(concat_path(model->training_parameters->output_dir_path, buffer), model)) {
+        path = concat_path(model->training_parameters->output_dir_path, buffer);
+        if (!dump_model(path, model)) {
+            fprintf(stderr, "ERROR: failed to save model\n");
+            return false;
+        }
+    } else {
+        path = concat_path(model->training_parameters->output_dir_path, model->training_parameters->output_path);
+        if (!dump_model(path, model)) {
             fprintf(stderr, "ERROR: failed to save model\n");
             return false;
         }
     }
 
-    char *path = concat_path(model->training_parameters->output_dir_path, model->training_parameters->output_path);
-    if (!dump_model(path, model)) {
-        fprintf(stderr, "ERROR: failed to save model\n");
-        return false;
-    }
 
     printf("INFO: saved model to file %s\n", path);
     return true;
