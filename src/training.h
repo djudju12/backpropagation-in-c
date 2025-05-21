@@ -32,7 +32,7 @@ typedef struct {
     int max_iters;
     char *output_path;
     char *output_dir_path;
-    // bool verbose;
+    char *config_path;
 } RNA_Parameters;
 
 typedef struct {

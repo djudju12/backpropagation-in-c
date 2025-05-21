@@ -1,10 +1,10 @@
 #include "training.h"
 #include <stdlib.h>
+#include <errno.h>
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
 #include <string.h>
-#include <time.h>
 
 #include <pthread.h>
 
@@ -26,6 +26,98 @@ RNA_Parameters get_default_parameters(void) {
 
 internal uint32_t big2lit(unsigned char *buffer) {
     return (uint32_t) buffer[3] | (uint32_t) buffer[2] << 8 | (uint32_t) buffer[1] << 16 | (uint32_t) buffer[0] << 24;
+}
+
+internal char* read_entire_file(char *file_path) {
+    char *file_content = NULL;
+
+    FILE *file = fopen(file_path, "r");
+    if (file == NULL) {
+        printf("ERROR: could not open file %s: %s\n", file_path, strerror(errno));
+        goto CLEAN_UP;
+    }
+
+    if (fseek(file, 0, SEEK_END) < 0) {
+        printf("ERROR: could not read %s. %s\n", file_path, strerror(errno));
+        goto CLEAN_UP;
+    }
+
+    size_t size = ftell(file);
+    rewind(file);
+    file_content = malloc(sizeof(char)*size);
+    assert(file_content != NULL);
+
+    size_t actual_read = 0;
+    if ((actual_read = fread(file_content, sizeof(char), size, file)) != size) {
+        printf("ERROR: could not read all content of %s. Expected %ld, actual %ld\n", file_path, size, actual_read);
+        goto CLEAN_UP;
+    }
+
+    fclose(file);
+
+    return file_content;
+
+CLEAN_UP:
+    if (file) {
+        fclose(file);
+    }
+
+    if (file_content) {
+        free(file_content);
+    }
+
+    return NULL;
+}
+
+internal bool read_parameters_from_file(char *file, RNA_Parameters *out) {
+    char *content = read_entire_file(file);
+    if (content == NULL) {
+        return false;
+    }
+
+    char *line = strtok(content, "\n");
+    static char parameter_buffer[256];
+    static char value_buffer[256];
+    while (line != NULL) {
+        char *s_line = line;
+        size_t c = 0;
+        for (; c < 255 && *line != '\0' && *line != ':'; line++) {
+            parameter_buffer[c++] = *line;
+        }
+
+        if (*line != ':') {
+            fprintf(stderr, "ERROR: could not parse line '%s' from file %s\n", s_line, file);
+            return false;
+        }
+
+        line++;
+        parameter_buffer[c] = '\0';
+
+        for (; *line != '\0' && *line == ' '; line++);
+
+        c = 0;
+        for (; c < 255 && *line != '\0'; line++) {
+            value_buffer[c++] = *line;
+        }
+
+        value_buffer[c] = '\0';
+
+        if (strcmp(parameter_buffer, "MAX_ITERS") == 0) {
+            out->max_iters = atoi(value_buffer);
+        } else if (strcmp(parameter_buffer, "LEARNING_RATE") == 0) {
+            out->lr = atof(value_buffer);
+        } else if (strcmp(parameter_buffer, "TOLERANCE") == 0) {
+            out->tolerance = atof(value_buffer);
+        } else if (strcmp(parameter_buffer, "OUT_DIR") == 0) {
+            out->output_dir_path = value_buffer;
+        } else {
+            fprintf(stderr, "WARNING: ignored parameter %s in file %s\n", parameter_buffer, file);
+        }
+
+        line = strtok(0, "\n");
+    }
+
+    return true;
 }
 
 bool read_data(const char *images_file_path, const char *labels_file_path, Data *data) {
@@ -270,8 +362,23 @@ void train_model_async(RNA_Model *model, Data *training_data) {
     pthread_detach(handle);
 }
 
+void print_parameters(RNA_Parameters parameters) {
+    printf("+---------------------+\n");
+    printf("| Training Parameters |\n");
+    printf("+------------+--------+\n");
+    printf("| Tolerance  | %.4f |\n", parameters.tolerance);
+    printf("| LR         | %.4f |\n", parameters.lr);
+    printf("| Max Iters  |   %04d |\n", parameters.max_iters);
+    // printf("| N Threads  |     %2d |\n", parameters.threads);
+    printf("+------------+--------+\n");
+}
+
 void train_model(RNA_Model *model, Data *training_data) {
-    srand(time(NULL));
+    if (model->training_parameters->config_path != NULL) {
+        read_parameters_from_file(model->training_parameters->config_path, model->training_parameters);
+    }
+
+    print_parameters(*model->training_parameters);
     struct timespec start, end;
 
     assert(clock_gettime(CLOCK_MONOTONIC, &start) >= 0);

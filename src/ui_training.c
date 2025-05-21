@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <unistd.h>
@@ -110,17 +111,6 @@ void chart_add_dp(Chart *chart, Vector2 dp) {
     if (dp.y > chart->max_y) chart->max_y = dp.y + dp.y*0.2;
 }
 
-void print_parameters(RNA_Parameters parameters) {
-    printf("+---------------------+\n");
-    printf("| Training Parameters |\n");
-    printf("+------------+--------+\n");
-    printf("| Tolerance  | %.4f |\n", parameters.tolerance);
-    printf("| LR         | %.4f |\n", parameters.lr);
-    printf("| Max Iters  |   %04d |\n", parameters.max_iters);
-    // printf("| N Threads  |     %2d |\n", parameters.threads);
-    printf("+------------+--------+\n");
-}
-
 void print_results(int total, int correct) {
     int incorrect_guesses = total - correct;
     float acc = (correct/(double)total)*100;
@@ -195,6 +185,7 @@ void usage(char *program_name) {
 }
 
 bool init_training(RNA_Parameters *training_parameters) {
+    srand(time(NULL));
     static const char *images_file_path = "./data/train-images.idx3-ubyte";
     static const char *labels_file_path = "./data/train-labels.idx1-ubyte";
 
@@ -204,7 +195,6 @@ bool init_training(RNA_Parameters *training_parameters) {
     }
 
     RNA_Model model = { .neuron_cnt = (uint32_t []) {64, 32, 10}, .layer_count = 3, .training_parameters = training_parameters };
-    print_parameters(*model.training_parameters);
 
     init_model(&model, &data);
     train_model_async(&model, &data);
@@ -273,6 +263,8 @@ int main(int argc, char **argv) {
                 training_parameters.output_path = value;
             } else if (strcmp(parameter, "--out-dir") == 0) {
                 training_parameters.output_dir_path = value;
+            } else if (strcmp(parameter, "--config") == 0) {
+                training_parameters.config_path = value;
             } else {
                 fprintf(stderr, "WARNING: ignoring unknow parameter %s\n", parameter);
             }
