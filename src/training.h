@@ -64,7 +64,7 @@ typedef struct {
 bool load_model(char *in, RNA_Model *model); // Load model from file
 bool save_model(RNA_Model *model); // Saves model to a file
 void init_model(RNA_Model *model, Data *data); // Initilize model (allocation and stuff)
-void train_model(RNA_Model *model, Data *training_data); // Train model using the training data (./data/train-*.ubyte)
+bool train_model(RNA_Model *model, Data *training_data); // Train model using the training data (./data/train-*.ubyte)
 void train_model_async(RNA_Model *model, Data *training_data);
 bool test_model(RNA_Model *model); // Test model using the testing data (./data/tk10k-*.ubyte)
 int find_label(RNA_Model *model, double *image); // Find label (0..9) of given image

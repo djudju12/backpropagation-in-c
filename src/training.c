@@ -33,12 +33,12 @@ internal char* read_entire_file(char *file_path) {
 
     FILE *file = fopen(file_path, "r");
     if (file == NULL) {
-        printf("ERROR: could not open file %s: %s\n", file_path, strerror(errno));
+        fprintf(stderr, "ERROR: could not open file %s: %s\n", file_path, strerror(errno));
         goto CLEAN_UP;
     }
 
     if (fseek(file, 0, SEEK_END) < 0) {
-        printf("ERROR: could not read %s. %s\n", file_path, strerror(errno));
+        fprintf(stderr, "ERROR: could not read %s. %s\n", file_path, strerror(errno));
         goto CLEAN_UP;
     }
 
@@ -49,7 +49,7 @@ internal char* read_entire_file(char *file_path) {
 
     size_t actual_read = 0;
     if ((actual_read = fread(file_content, sizeof(char), size, file)) != size) {
-        printf("ERROR: could not read all content of %s. Expected %ld, actual %ld\n", file_path, size, actual_read);
+        fprintf(stderr, "ERROR: could not read all content of %s. Expected %ld, actual %ld\n", file_path, size, actual_read);
         goto CLEAN_UP;
     }
 
@@ -255,9 +255,9 @@ int find_label(RNA_Model *model, double *image) {
 }
 
 internal void _train_model(RNA_Model *model, Data *training_data) {
+    model->training = true;
     const size_t total_pixels = training_data->meta.rows*training_data->meta.cols;
     const double lr = model->training_parameters->lr;
-    model->training = true;
     DA_APPEND(model->error_hist, ((Error) { .iteration = 0, .value = 1.0 }));
 
     double global_error = 0;
@@ -327,6 +327,7 @@ internal void _train_model(RNA_Model *model, Data *training_data) {
             int input_it = training_data->meta.size*it + (i + 1);
             if (input_it % ERROR_VALIDATION_STEP == 0) {
                 global_error /= ERROR_VALIDATION_STEP;
+                printf("INFO: iteration: %d error: %f\n", input_it, global_error);
                 DA_APPEND(model->error_hist, ((Error) { .iteration = input_it, .value = global_error }));
                 if (global_error < model->training_parameters->tolerance) {
                     goto CLEAN_UP;
@@ -347,8 +348,9 @@ typedef struct {
 
 internal void* _train_model_async(void *args) {
     Thread_Args *td = (Thread_Args *) args;
-    train_model(td->model, td->training_data);
-    save_model(td->model);
+    if (train_model(td->model, td->training_data)) {
+        save_model(td->model);
+    }
     return NULL;
 }
 
@@ -369,18 +371,37 @@ void print_parameters(RNA_Parameters parameters) {
     printf("| Tolerance  | %.4f |\n", parameters.tolerance);
     printf("| LR         | %.4f |\n", parameters.lr);
     printf("| Max Iters  |   %04d |\n", parameters.max_iters);
-    // printf("| N Threads  |     %2d |\n", parameters.threads);
     printf("+------------+--------+\n");
 }
 
-void train_model(RNA_Model *model, Data *training_data) {
-    if (model->training_parameters->config_path != NULL) {
-        read_parameters_from_file(model->training_parameters->config_path, model->training_parameters);
+internal double rand_w(float min, float max) {
+    return min + (float)rand()/(float)RAND_MAX*(max-min);
+}
+
+bool train_model(RNA_Model *model, Data *training_data) {
+    model->error_hist.count = 0;
+    model->epoch = 0;
+    DA_APPEND(model->error_hist, ((Error) { .iteration = 1, .value = 1.0 }));
+
+    if (model->training_parameters->config_path != NULL &&
+        !read_parameters_from_file(model->training_parameters->config_path, model->training_parameters)
+    ) {
+        fprintf(stderr, "ERROR: parameters could not be readed from file, stopping training...\n");
+        return false;
     }
 
     print_parameters(*model->training_parameters);
-    struct timespec start, end;
 
+    for (size_t i = 0; i < model->layer_count; i++) {
+        size_t neuron_cnt = model->neuron_cnt[i];
+        memset(model->errors[i], 0, sizeof(*model->errors[i]) * neuron_cnt);
+        size_t total_weights = (model->weights_cnt[i] + 1) * neuron_cnt;
+        for (size_t w = 0; w < total_weights; w++) {
+            model->weights[i][w] = rand_w(-0.5, 0.5);
+        }
+    }
+
+    struct timespec start, end;
     assert(clock_gettime(CLOCK_MONOTONIC, &start) >= 0);
     _train_model(model, training_data);
     assert(clock_gettime(CLOCK_MONOTONIC, &end) >= 0);
@@ -390,6 +411,7 @@ void train_model(RNA_Model *model, Data *training_data) {
     float diff_in_secs = end_sec - start_sec;
     printf("INFO: training finished\n");
     printf("INFO: total training time: %.3f secs\n", diff_in_secs);
+    return true;
 }
 
 internal void allocate_model(RNA_Model *model) {
@@ -549,10 +571,6 @@ bool save_model(RNA_Model *model) {
     return true;
 }
 
-internal double rand_w(float min, float max) {
-    return min + (float)rand()/(float)RAND_MAX*(max-min);
-}
-
 // Make sure to the the `neuron_cnt` in the model before initialization
 void init_model(RNA_Model *model, Data *data) {
     allocate_model(model);
@@ -576,8 +594,5 @@ void init_model(RNA_Model *model, Data *data) {
         // + 1 for bias
         size_t total_weights = (model->weights_cnt[layer] + 1) * model->neuron_cnt[layer];
         model->weights[layer] = malloc(sizeof(double)*total_weights);
-        for (size_t w = 0; w < total_weights; w++) {
-            model->weights[layer][w] = rand_w(-0.5, 0.5);
-        }
     }
 }

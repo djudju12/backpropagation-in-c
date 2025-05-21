@@ -83,9 +83,10 @@ void chart_draw(int x, int y, Chart chart) {
         DrawTextEx(font, label_buffer, scaled_pos, CHART_FONT_SIZE, 1.0, BLACK);
     }
 
-    for (int x = 0; x <= CHART_STEP_CNT; x++) {
+    int step_x = CHART_STEP_CNT > chart.max_x ? chart.max_x : CHART_STEP_CNT;
+    for (int x = 0; x <= step_x; x++) {
         Vector2 pos = (Vector2) {
-            .x = x*(chart.max_x / (double) CHART_STEP_CNT),
+            .x = x*(chart.max_x / (double) step_x),
             .y = 0
         };
 
@@ -212,16 +213,23 @@ bool init_training(RNA_Parameters *training_parameters) {
         size_t new_data_count = model.error_hist.count - chart.points.count;
         for (size_t i = 0; i < new_data_count; i++) {
             Error new = model.error_hist.items[chart.points.count];
-            printf("INFO: iteration: %ld error: %f\n", new.iteration, new.value);
             chart_add_dp(&chart, (Vector2) { .x = (double) new.iteration, .y = new.value });
         }
 
         BeginDrawing();
 
-        chart_draw(SCREEN_WIDTH/2 - chart.width/2, 30, chart);
+        if (model.error_hist.count > 0) {
+            chart_draw(SCREEN_WIDTH/2 - chart.width/2, 30, chart);
+        }
 
         if (!model.training && IsKeyPressed(KEY_T) && !test_model(&model)) {
             printf("ERROR: could not test model\n");
+        }
+
+        if (!model.training && IsKeyPressed(KEY_SPACE)) {
+            chart.points.count = 0;
+            chart.max_x = 0;
+            train_model_async(&model, &data);
         }
 
         ClearBackground((Color){.r = 220, .g = 220, .b = 220, .a = 255});
