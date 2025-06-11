@@ -596,3 +596,16 @@ void init_model(RNA_Model *model, Data *data) {
         model->weights[layer] = malloc(sizeof(double)*total_weights);
     }
 }
+
+void denit_model(RNA_Model *model) {
+    for (size_t layer = 0; layer < model->layer_count; layer++) {
+        free(model->errors[layer]);
+        free(model->values[layer]);
+        free(model->weights[layer]);
+    }
+
+    free(model->weights_cnt);
+    free(model->errors);
+    free(model->values);
+    free(model->weights);
+}

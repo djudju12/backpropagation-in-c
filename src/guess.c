@@ -256,15 +256,14 @@ char* shift(int *argc, char ***argv) {
 void usage(char *program_name) {
     printf(
 "Usage:\n"
-"  %s --gui --model <model-file>\n"
+"  %s --model <model-file>\n"
 "  %s --help\n",
     program_name, program_name);
 
     printf(
 "\nOptions:\n"
 "  --help               Prints this message.\n"
-"  --gui                Launch the graphical interface.\n"
-"  --model <file>       Input model file (required for GUI).\n");
+"  --model <file>       Input model file.\n");
 }
 
 int main(int argc, char **argv) {

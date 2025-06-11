@@ -199,6 +199,7 @@ void usage(char *program_name) {
 "  --out <file>         Output file for the trained model.\n"
 "  --out-dir <file>     Output directory for the trained model.\n"
 "  --max-iters <n>      Maximum number of iterations [default: %d].\n"
+"  --config <file>      Parse configs (lr, tolerance, max-iters) from a file.\n"
 "  --tolerance <value>  Sets the minimum error required to stop training early [default: %.3f].\n"
 "  --lr <rate>          Learning rate [default: %.3f].\n",
     default_parameters.max_iters, default_parameters.tolerance, default_parameters.lr);
