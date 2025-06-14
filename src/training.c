@@ -9,7 +9,7 @@
 #include <pthread.h>
 
 #define ARR_SIZE(arr) (sizeof(arr)/sizeof(arr[0]))
-#define ERROR_VALIDATION_STEP 2500 // check error sum each ERROR_VALIDATION_STEP iterations
+#define ERROR_VALIDATION_STEP 10000 // check error sum each ERROR_VALIDATION_STEP iterations
 #define LOG_WRITE_ERROR(file) fprintf(stderr, "ERROR: could not write to file %s\n", file)
 #define LOG_READ_ERROR(msg, file) fprintf(stderr, "ERROR: could not read %s from file %s\n", msg, file)
 #define internal static

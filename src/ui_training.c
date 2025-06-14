@@ -6,9 +6,13 @@
 #include <unistd.h>
 #include <raylib.h>
 #include <raymath.h>
+#include <math.h>
 
 #include "resources/courier_prime.c"
 #include "training.h"
+
+#define KS "kkkkkkkkkkkkkkkkkk"
+#define LOG_1000 6.907755278982137
 
 #define SCREEN_WIDTH 510
 #define SCREEN_HEIGHT 480
@@ -115,7 +119,14 @@ void chart_draw(int x, int y, Chart chart) {
             CHART_LINE_THICKNESS, BLACK
         );
 
-        snprintf(label_buffer, 64, "%d", (int) pos.x);
+        int ks = log(pos.x) / LOG_1000;
+        if (ks > 0) {
+            int v = pos.x / pow(1000, ks);
+            snprintf(label_buffer, 64, "%d%.*s", v, ks, KS);
+        } else {
+            snprintf(label_buffer, 64, "%d", (int) pos.x);
+        }
+
         Vector2 text_size = MeasureTextEx(font, label_buffer, CHART_FONT_SIZE, 1.0);
         scaled_pos.x -= text_size.x/2.0;
         scaled_pos.y += text_size.y/2.0 + CHART_STEP_PAD;
@@ -230,7 +241,6 @@ bool init_training(RNA_Parameters *training_parameters) {
     Chart chart = {0};
     chart.width = 350;
     chart.height = 250;
-    chart.max_y = 1.0;
 
     int padding_x = SCREEN_WIDTH/2 - chart.width/2;
     int padding_y = 30;
