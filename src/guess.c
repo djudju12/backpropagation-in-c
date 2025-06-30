@@ -18,20 +18,14 @@
 
 static Color pixels[WINDOW_SIZE][WINDOW_SIZE];
 
-void mark_mouse_pos(Color color) {
+void mark_mouse_pos(RenderTexture2D *target, Color color) {
     Vector2 pos = GetMousePosition();
-    int px = (int) (pos.x - MARK_SIZE/2);
-    int py = (int) (pos.y - MARK_SIZE/2);
-
-    for (int y = 0; y < MARK_SIZE; y++) {
-        int cy = py + y;
-        for (int x = 0; x < MARK_SIZE; x++) {
-            int cx = px + x;
-            if (cy > PADDING && cx > PADDING && cy < (WINDOW_SIZE - PADDING) && cx < (WINDOW_SIZE - PADDING)) {
-                pixels[cy][cx] = color;
-            }
-        }
-    }
+    int px = (int) (pos.x - MARK_SIZE/2) - PADDING;
+    int py = (int) (pos.y - MARK_SIZE/2) - PADDING;
+    BeginTextureMode(*target);
+    DrawRectangle(px, py, MARK_SIZE, MARK_SIZE, color);
+    // DrawCircle(px + MARK_SIZE/2, py + MARK_SIZE/2, MARK_SIZE/2, color);
+    EndTextureMode();
 }
 
 Color * make_screen_pixels(double *image) {
@@ -110,7 +104,7 @@ bool load_model_and_init_test_gui(char *model_path) {
         return false;
     }
 
-    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Number Recognition");
+    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Guess!");
 
     for (size_t y = 0; y < WINDOW_SIZE; y++) {
         for (size_t x = 0; x < WINDOW_SIZE; x++) {
@@ -124,44 +118,55 @@ bool load_model_and_init_test_gui(char *model_path) {
 
     Image img = GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK);
     Texture2D texture = LoadTextureFromImage(img);
-    Texture2D window_texture = LoadTextureFromImage(LoadImageFromScreen());
     Texture2D card_textures[total_cards];
     for (size_t i = 0; i < total_cards; i++) {
         card_textures[i] = LoadTextureFromImage(GenImageColor(IMAGE_SIZE, IMAGE_SIZE, BLACK));
     }
 
+    RenderTexture2D target = LoadRenderTexture(WINDOW_SIZE - PADDING*2, WINDOW_SIZE - PADDING*2);
+
     int8_t guess = find_label(&model, testing_data._images);
     UpdateTexture(texture, make_screen_pixels(testing_data._images));
     size_t image_index = 0;
     bool drawining_mode = false;
+    bool clear_screen = false;
 
     int8_t label = -1;
     static char buffer[32];
     size_t current_image = 0;
     while (!WindowShouldClose()) {
-        if (IsKeyPressed(KEY_M)) drawining_mode = !drawining_mode;
+        if (IsKeyPressed(KEY_M)) {
+            drawining_mode = !drawining_mode;
+            clear_screen = true;
+        }
 
         if (drawining_mode) {
             if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                mark_mouse_pos(WHITE);
-                UpdateTexture(window_texture, pixels);
-            } else if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-                mark_mouse_pos(BLACK);
-                UpdateTexture(window_texture, pixels);
-            } else if (IsKeyPressed(KEY_SPACE))  {
+                mark_mouse_pos(&target, WHITE);
+            }
+
+            if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+                mark_mouse_pos(&target, BLACK);
+            }
+
+            if (IsKeyPressed(KEY_SPACE))  {
                 double *image = make_image();
                 label = find_label(&model, image);
-            } else if (IsKeyPressed(KEY_R)) {
-                for (size_t y = 0; y < WINDOW_SIZE; y++) {
-                    for (size_t x = 0; x < WINDOW_SIZE; x++) {
-                        pixels[y][x] = BLACK;
-                    }
-
-                    label = -1;
-                }
-
-                UpdateTexture(window_texture, pixels);
             }
+
+            clear_screen = clear_screen || IsKeyDown(KEY_R);
+            if (clear_screen) {
+                BeginTextureMode(target);
+                ClearBackground(BLACK);
+                EndTextureMode();
+                clear_screen = false;
+            }
+
+            BeginDrawing();
+            ClearBackground(BLACK);
+            DrawTextureRec(target.texture, (Rectangle) {0, 0, (float)target.texture.width, (float)-target.texture.height}, (Vector2) {PADDING, PADDING}, WHITE);
+
+            DrawRectangleLines(PADDING, PADDING, WINDOW_SIZE - PADDING*2, WINDOW_SIZE - PADDING*2, WHITE);
 
             if (label < 0) {
                 sprintf(buffer, "Guess: <space>");
@@ -169,10 +174,6 @@ bool load_model_and_init_test_gui(char *model_path) {
                 sprintf(buffer, "Guess: %d", label);
             }
 
-            BeginDrawing();
-            ClearBackground(BLACK);
-
-            DrawTexture(window_texture, 0, 0, WHITE);
             DrawText("Press <R> to clear", PADDING, PADDING/2.0, 28, WHITE);
             DrawText(
                 buffer,
@@ -182,7 +183,6 @@ bool load_model_and_init_test_gui(char *model_path) {
                 WHITE
             );
 
-            DrawRectangleLines(PADDING, PADDING, WINDOW_SIZE - PADDING*2, WINDOW_SIZE - PADDING*2, WHITE);
             EndDrawing();
         } else {
             if (IsKeyPressed(KEY_RIGHT) && current_image < testing_data.meta.size) {
@@ -239,6 +239,7 @@ bool load_model_and_init_test_gui(char *model_path) {
             }
 
             DrawRectangleLines(PADDING, PADDING, WINDOW_SIZE - PADDING*2, WINDOW_SIZE - PADDING*2, WHITE);
+
             EndDrawing();
         }
 
